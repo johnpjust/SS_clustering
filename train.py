@@ -11,54 +11,48 @@ import glob
 import random
 import pathlib
 import pandas as pd
+import functools
+import re
+import ntpath
 
-# def read_image(path):
-#     img = io.imread(path)
-#     return transform.rescale(util.img_as_float32(img), 0.1, multichannel=True)
+crop_pat = re.compile('(?<=_)(?:.(?!_))+$')
+gpstime_pat = re.compile('\d+\.\d+')
 
-def get_label(file_path):
-  # convert the path to a list of path components
-  parts = tf.strings.split(file_path, os.path.sep)
-  # The second to last is the class-directory
-  return parts[-2] == CLASS_NAMES
-
-def pre_process(x_in):
-    img = tf.io.read_file(x_in[0])
+def pre_process_(CLASS_NAMES, filepath):
+    img = tf.io.read_file(filepath)
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_bmp(img, channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
     img = tf.image.convert_image_dtype(img, tf.float32)
-    IMG_WIDTH, IMG_HEIGHT = np.array(img._shape_as_list()[:2])//args.downscale
-    # resize the image to the desired size.
-    return tf.image.resize(img, [IMG_WIDTH, IMG_HEIGHT]), x_in[1]
+
+    # # resize the image to the desired size.
+    return tf.image.resize(img, [120, 192]), tf.strings.split(tf.strings.split(filepath, os.path.sep)[-4],'_')[-1] == CLASS_NAMES
 
 def load_dataset(args):
     tf.random.set_seed(args.manualSeed)
     np.random.seed(args.manualSeed)
     random.seed(args.manualSeed)
 
-    df = pd.read_pickle(args.dataset)
-    df.crop = pd.Categorical(df.crop)
-    df['code'] = df.crop.cat.codes
+    pre_process = functools.partial(pre_process_, args.CLASS_NAMES)
 
-    data_split_ind = np.random.permutation(df.shape[0])
+    data_split_ind = np.random.permutation(args.imgs_paths.shape[0])
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
 
-    dataset_train = tf.data.Dataset.from_tensor_slices(df.values[:, [0,-1]][train_ind,:])  # .float().to(args.device)
+    dataset_train = tf.data.Dataset.from_tensor_slices(args.imgs_paths[train_ind])  # .float().to(args.device)
     dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
-        batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
+        batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
     # dataset_train = dataset_train.shuffle(buffer_size=len(train)).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_valid = tf.data.Dataset.from_tensor_slices(df.values[:, [0,-1]][val_ind,:])  # .float().to(args.device)
+    dataset_valid = tf.data.Dataset.from_tensor_slices(args.imgs_paths[val_ind])  # .float().to(args.device)
     dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
-        batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
+        batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
     # dataset_valid = dataset_valid.batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_test = tf.data.Dataset.from_tensor_slices(df.values[:, [0,-1]][test_ind,:])  # .float().to(args.device)
+    dataset_test = tf.data.Dataset.from_tensor_slices(args.imgs_paths[test_ind])  # .float().to(args.device)
     dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
-        batch_size=args.batch_dim * 2).prefetch(buffer_size=args.prefetch_size)
+        batch_size=args.batch_dim * 2).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
 
     return dataset_train, dataset_valid, dataset_test
 
@@ -74,7 +68,8 @@ def create_model(args):
     block_output = layers.Conv2D(32,3,strides=2, activation=None)(x)
     # block_output = layers.MaxPooling2D(3, strides=2)(x)
 
-    x = layers.Conv2D(32, 1, activation=actfun, padding='same')(block_output)
+    x = actfun(block_output)
+    x = layers.Conv2D(32, 1, activation=actfun, padding='same')(x)
     x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
     x = layers.add([x, block_output])
     x = layers.Conv2D(64, 1, activation=actfun)(x)
@@ -89,22 +84,21 @@ def create_model(args):
     # x = layers.Conv2D(32, 1, activation=actfun)(x)
     # x = layers.Conv2D(32, 3, activation=None)(x)
     x = layers.GlobalAveragePooling2D()(x)
-
     x = layers.Flatten()(x)
-    x = layers.Dense(4, activation=actfun)(x)
-    quality = tf.nn.tanh(layers.Dense(1)(x))
-    model = tf.keras.Model(inputs, quality, name='toy_resnet')
-    model.summary()
 
+    x = layers.Dense(32, activation=actfun)(x)
+    output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
+    model = tf.keras.Model(inputs, output, name='resnet_model')
+    model.summary()
     return model
 
-def train(model, optimizer, scheduler, imgs, quality_y, train_ind, val_ind, test_ind, args):
+def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
-        for ind in batch(np.random.permutation(train_ind), args.batch_dim):
+        for x, y in train_ds:
             with tf.GradientTape() as tape:
-                loss = tf.reduce_mean(tf.math.squared_difference(quality_y[ind,:], model(imgs[ind,:,:,:], training=True)))
+                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -120,11 +114,11 @@ def train(model, optimizer, scheduler, imgs, quality_y, train_ind, val_ind, test
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
 
-        test_loss=[]
-        for ind in batch(test_ind, 2*args.batch_dim):
-            loss = tf.reduce_mean(tf.math.squared_difference(quality_y[ind,:], model(imgs[ind,:,:,:], training=False))).numpy()
-            test_loss.append(loss)
-        test_loss = tf.reduce_mean(test_loss)
+        # test_loss=[]
+        # for ind in batch(test_ind, 2*args.batch_dim):
+        #     loss = tf.reduce_mean(tf.math.squared_difference(quality_y[ind,:], model(imgs[ind,:,:,:], training=False))).numpy()
+        #     test_loss.append(loss)
+        # test_loss = tf.reduce_mean(test_loss)
 
         # print("test loss:  " + str(test_loss))
 
@@ -133,7 +127,7 @@ def train(model, optimizer, scheduler, imgs, quality_y, train_ind, val_ind, test
         #### tensorboard
         # tf.summary.scalar('loss/train', train_loss, tf.compat.v1.train.get_global_step())
         tf.summary.scalar('loss/validation', validation_loss, globalstep)
-        tf.summary.scalar('loss/test', test_loss, globalstep) ##tf.compat.v1.train.get_global_step()
+        # tf.summary.scalar('loss/test', test_loss, globalstep) ##tf.compat.v1.train.get_global_step()
 
         if stop:
             break
@@ -167,28 +161,33 @@ if gpus:
 
 args = parser_()
 args.device = '/gpu:0'  # '/gpu:0'
-args.dataset = r'Z:\ftp\sprayers\IntelligentSprayTechnology\Connor_Field_Data\2019_ImageLibrary_FieldLogs\pandas_path_time_crop_array.pickle'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
+args.datapath = r'Z:\ftp\sprayers\IntelligentSprayTechnology\Connor_Field_Data\2019_ImageLibrary_FieldLogs'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
 args.batch_dim = 100
 args.clip_norm = 0.1
 args.epochs = 5000
 args.patience = 10
 args.load = r''
 args.save = True
-args.tensorboard = r'C:\Users\justjo\PycharmProjects\furrowFeatureExtractor\tensorboard'
+args.tensorboard = r'C:\Users\justjo\PycharmProjects\S&S_clustering\tensorboard'
 args.early_stopping = 10
 args.manualSeed = None
 args.manualSeedw = None
-args.prefetch_size = 2  # data pipeline prefetch buffer size
+args.prefetch_size = 10  # data pipeline prefetch buffer size
 args.parallel = 8  # data pipeline parallel processes
 args.preserve_aspect_ratio = True;  ##when resizing
 args.p_val = 0.2
 args.downscale = 10
-
+args.take = 50
 
 args.path = os.path.join(args.tensorboard, 'furrowfeat_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
+args.imgs_paths = np.load(os.path.join(args.datapath, 'filtered_img_paths.npy'))
+args.CLASS_NAMES = np.unique([crop_pat.search(x.split(os.sep)[-4])[0] for x in args.imgs_paths])
+args.imgs_paths = np.array([os.path.join(args.datapath, filepath) for filepath in args.imgs_paths])
+
 print('Loading dataset..')
-train_ind, val_ind, test_ind = load_dataset(args)
+train_ds, val_ds, test_ds = load_dataset(args)
+
 
 if args.save and not args.load:
     print('Creating directory experiment..')
@@ -205,10 +204,6 @@ with tf.device(args.device):
 ## tensorboard and saving
 writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
 writer.set_as_default()
-tf.compat.v1.train.get_or_create_global_step()
-
-global_step = tf.compat.v1.train.get_global_step()
-global_step.assign(0)
 
 root = None
 args.start_epoch = 0
@@ -228,7 +223,7 @@ print('Creating scheduler..')
 scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
 
 with tf.device(args.device):
-    train(model, optimizer, scheduler, imgs, quality_y, train_ind, val_ind, test_ind, args)
+    train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
 # ###################### inference #################################
     embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds')
