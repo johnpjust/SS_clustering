@@ -54,13 +54,8 @@ args.class_weights = args.class_weights/np.sum(args.class_weights)
 
 def zoom(x):
     # Generate 20 crop settings, ranging from a 1% to 20% crop.
-    scales = list(np.arange(0.8, 1.0, 0.01))
-    boxes = np.zeros((len(scales), 4))
-
-    for i, scale in enumerate(scales):
-        x1 = y1 = 0.5 - (0.5 * scale)
-        x2 = y2 = 0.5 + (0.5 * scale)
-        boxes[i] = [x1, y1, x2, y2]
+    bbox = [*args.crop_size[:2]*tf.random.uniform(shape=(1,), minval=0.8, maxval=1), 3]
+    rcrop = tf.image.random_crop(x, size=bbox)
 
     def random_crop(img):
         # Create different crops for an image
