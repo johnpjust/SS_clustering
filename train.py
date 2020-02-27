@@ -7,32 +7,103 @@ from tensorflow.keras import layers, Input, Model
 import tensorflow_probability as tfp
 import numpy as np
 from earlystopping import *
-import glob
 import random
 import pathlib
-import pandas as pd
 import functools
 import re
+from pathlib import Path
 import ntpath
+from augmentations import *
 
 crop_pat = re.compile('(?<=_)(?:.(?!_))+$')
 gpstime_pat = re.compile('\d+\.\d+')
 
-def pre_process_(CLASS_NAMES, filepath):
-    img = tf.io.read_file(filepath)
+class parser_:
+    pass
+
+args = parser_()
+args.device = '/gpu:0'  # '/gpu:0'
+args.batch_dim = 1000
+args.clip_norm = 0.1
+args.epochs = 5000
+args.patience = 10
+args.load = r''
+args.save = True
+args.tensorboard = r'C:\Users\justjo\PycharmProjects\S&S_clustering\tensorboard'
+args.early_stopping = 10
+args.manualSeed = None
+args.manualSeedw = None
+args.prefetch_size = 10  # data pipeline prefetch buffer size
+args.parallel = 8  # data pipeline parallel processes
+args.preserve_aspect_ratio = True;  ##when resizing
+args.p_val = 0.2
+args.downscale = 10
+args.take = 50
+args.crop_size = [40, 40, 3]
+
+args.path = os.path.join(args.tensorboard, 'furrowfeat_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
+
+imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
+fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
+crops = np.array([ii[2] for ii in fn_time_crop_list])
+times = np.array([float(ii[1]) for ii in fn_time_crop_list])
+fn_time_crop_list = []
+args.CLASS_NAMES, args.class_counts = np.unique(crops, return_counts=True)
+args.class_weights = np.max(args.class_counts)/args.class_counts
+args.class_weights = args.class_weights/np.sum(args.class_weights)
+
+def zoom(x):
+    # Generate 20 crop settings, ranging from a 1% to 20% crop.
+    scales = list(np.arange(0.8, 1.0, 0.01))
+    boxes = np.zeros((len(scales), 4))
+
+    for i, scale in enumerate(scales):
+        x1 = y1 = 0.5 - (0.5 * scale)
+        x2 = y2 = 0.5 + (0.5 * scale)
+        boxes[i] = [x1, y1, x2, y2]
+
+    def random_crop(img):
+        # Create different crops for an image
+        crops = tf.image.crop_and_resize([img], boxes=boxes, box_ind=np.zeros(len(scales)), crop_size=args.crop_size[:2])
+        # Return a random crop
+        return crops[tf.random_uniform(shape=[], minval=0, maxval=len(scales), dtype=tf.int32)]
+
+    choice = tf.random_uniform(shape=[], minval=0., maxval=1., dtype=tf.float32)
+
+    # Only apply cropping 50% of the time
+    return random_crop(x)
+
+aug_prob = [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
+
+augmentations = [tf.image.random_flip_left_right,
+                 tf.image.random_flip_up_down,
+                 lambda x: tf.image.random_hue(x, 0.5),
+                 lambda x: tf.image.random_saturation(x, 0.1, 10),
+                 lambda x: tf.image.random_brightness(x, 0.2),
+                 lambda x: tf.image.random_contrast(x, 0.7, 1.3)
+                 ]
+
+def pre_process_(img_crop):
     # convert the compressed string to a 3D uint8 tensor
-    img = tf.image.decode_bmp(img, channels=3)
+    img = tf.image.decode_png(img_crop[0], channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
     img = tf.image.convert_image_dtype(img, tf.float32)
+    img = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+
+    for f, prob in zip(augmentations, aug_prob):
+        img = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(x), lambda: x)
+    img = tf.clip_by_value(img, 0, 1)
+
+    # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
 
     # # resize the image to the desired size.
-    return tf.image.resize(img, [120, 192]), tf.strings.split(tf.strings.split(filepath, os.path.sep)[-4],'_')[-1] == CLASS_NAMES
+    return tf.image.resize(img, [120, 192]), img_crop[1] == args.CLASS_NAMES
 
 def load_dataset(args):
     tf.random.set_seed(args.manualSeed)
     np.random.seed(args.manualSeed)
     random.seed(args.manualSeed)
-
+    args.imgs_paths = np.array([str(x) for x in args.imgs_paths])
     pre_process = functools.partial(pre_process_, args.CLASS_NAMES)
 
     data_split_ind = np.random.permutation(args.imgs_paths.shape[0])
@@ -52,7 +123,7 @@ def load_dataset(args):
 
     dataset_test = tf.data.Dataset.from_tensor_slices(args.imgs_paths[test_ind])  # .float().to(args.device)
     dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
-        batch_size=args.batch_dim * 2).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
+        batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
 
     return dataset_train, dataset_valid, dataset_test
 
@@ -108,8 +179,9 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         ## variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='batch_normalization')
 
         validation_loss = []
-        for ind in batch(val_ind, 2*args.batch_dim):
-            loss = tf.reduce_mean(tf.math.squared_difference(quality_y[ind,:], model(imgs[ind,:,:,:], training=False))).numpy()
+        for x, y in val_ds:
+            with tf.GradientTape() as tape:
+                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
@@ -136,9 +208,6 @@ def load_model(args, root):
     print('Loading model..')
     root.restore(tf.train.latest_checkpoint(args.load or args.path))
 
-class parser_:
-    pass
-
 
 # config = tf.compat.v1.ConfigProto()
 # config.gpu_options.allow_growth = True
@@ -159,31 +228,24 @@ if gpus:
         # Memory growth must be set before GPUs have been initialized
         print(e)
 
-args = parser_()
-args.device = '/gpu:0'  # '/gpu:0'
-args.datapath = r'Z:\ftp\sprayers\IntelligentSprayTechnology\Connor_Field_Data\2019_ImageLibrary_FieldLogs'  # 'gq_ms_wheat_johnson'#'gq_ms_wheat_johnson' #['gas', 'bsds300', 'hepmass', 'miniboone', 'power']
-args.batch_dim = 100
-args.clip_norm = 0.1
-args.epochs = 5000
-args.patience = 10
-args.load = r''
-args.save = True
-args.tensorboard = r'C:\Users\justjo\PycharmProjects\S&S_clustering\tensorboard'
-args.early_stopping = 10
-args.manualSeed = None
-args.manualSeedw = None
-args.prefetch_size = 10  # data pipeline prefetch buffer size
-args.parallel = 8  # data pipeline parallel processes
-args.preserve_aspect_ratio = True;  ##when resizing
-args.p_val = 0.2
-args.downscale = 10
-args.take = 50
 
-args.path = os.path.join(args.tensorboard, 'furrowfeat_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
-args.imgs_paths = np.load(os.path.join(args.datapath, 'filtered_img_paths.npy'))
-args.CLASS_NAMES = np.unique([crop_pat.search(x.split(os.sep)[-4])[0] for x in args.imgs_paths])
-args.imgs_paths = np.array([os.path.join(args.datapath, filepath) for filepath in args.imgs_paths])
+
+
+# ### organize data for ease of processing/training/reading
+# args.imgs_paths = np.array(list(Path(args.datapath).rglob('*.png')))
+# classes = np.array([crop_pat.search(x.parts[-4])[0] for x in args.imgs_paths])
+#
+# img_list = []
+# for xx in args.imgs_paths:
+#     img_list.append(tf.io.read_file(str(xx)).numpy())
+#
+# np.save('J:\SaS\imgs_raw_coded_png_bytes.npy', np.array(img_list))
+#
+# fn_time_list = []
+# for crop, p in zip(classes, [s for s in args.imgs_paths]):
+#     fn_time_list.append((str(p.relative_to(r'J:\SaS')), float(gpstime_pat.search(ntpath.split(p)[1])[0]), crop))
+# np.save(r'J:\SaS\fn_time_crop.npy', np.array(fn_time_list))
 
 print('Loading dataset..')
 train_ds, val_ds, test_ds = load_dataset(args)
