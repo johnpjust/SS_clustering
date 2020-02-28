@@ -23,7 +23,6 @@ class parser_:
 
 args = parser_()
 args.device = '/gpu:0'  # '/gpu:0'
-args.batch_dim = 1000
 args.clip_norm = 0.1
 args.epochs = 5000
 args.patience = 10
@@ -39,9 +38,11 @@ args.preserve_aspect_ratio = True;  ##when resizing
 args.p_val = 0.2
 args.downscale = 10
 args.take = 50
+args.batch_dim = 10
 args.crop_size = [40, 40, 3]
 
 args.path = os.path.join(args.tensorboard, 'furrowfeat_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
+
 
 imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
 fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
@@ -49,78 +50,103 @@ crops = np.array([ii[2] for ii in fn_time_crop_list])
 times = np.array([float(ii[1]) for ii in fn_time_crop_list])
 fn_time_crop_list = []
 args.CLASS_NAMES, args.class_counts = np.unique(crops, return_counts=True)
-args.class_weights = np.max(args.class_counts)/args.class_counts
-args.class_weights = args.class_weights/np.sum(args.class_weights)
+# args.class_weights = np.max(args.class_counts)/args.class_counts
+# args.class_weights = args.class_weights/np.sum(args.class_weights)
 
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        # Currently, memory growth needs to be the same across GPUs
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+    except RuntimeError as e:
+        # Memory growth must be set before GPUs have been initialized
+        print(e)
+
+@tf.function
 def zoom(x):
-    # Generate 20 crop settings, ranging from a 1% to 20% crop.
-    bbox = [*args.crop_size[:2]*tf.random.uniform(shape=(1,), minval=0.8, maxval=1), 3]
-    rcrop = tf.image.random_crop(x, size=bbox)
+    # bbox = tf.stack([*args.crop_size[:2]*tf.random.uniform(shape=[], minval=0.8, maxval=1), 3])
+    rval = tf.random.uniform(shape=[], minval=0.8, maxval=1)
+    bbox = [args.crop_size[0]*rval, args.crop_size[1]*rval, 3]
+    x = tf.image.random_crop(x, size=bbox)
+    return tf.image.resize(x, size=args.crop_size[:2])
 
-    def random_crop(img):
-        # Create different crops for an image
-        crops = tf.image.crop_and_resize([img], boxes=boxes, box_ind=np.zeros(len(scales)), crop_size=args.crop_size[:2])
-        # Return a random crop
-        return crops[tf.random_uniform(shape=[], minval=0, maxval=len(scales), dtype=tf.int32)]
-
-    choice = tf.random_uniform(shape=[], minval=0., maxval=1., dtype=tf.float32)
-
-    # Only apply cropping 50% of the time
-    return random_crop(x)
-
-aug_prob = [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75]
-
+args.aug_prob = [0.85]*7
 augmentations = [tf.image.random_flip_left_right,
                  tf.image.random_flip_up_down,
                  lambda x: tf.image.random_hue(x, 0.5),
                  lambda x: tf.image.random_saturation(x, 0.1, 10),
                  lambda x: tf.image.random_brightness(x, 0.2),
-                 lambda x: tf.image.random_contrast(x, 0.7, 1.3)
-                 ]
+                 lambda x: tf.image.random_contrast(x, 0.7, 1.3),
+                 zoom]
 
-def pre_process_(img_crop):
+@tf.function
+def pre_process_aug(img_crop):
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_png(img_crop[0], channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
     img = tf.image.convert_image_dtype(img, tf.float32)
+    '''
+        note for self-supervised method will need a function to product several random crops (random zoom/size) and resize back to orig
+        consider using two loss functions (alternating) between regular multi-class cross entropy and the NT-Xent loss which allows
+        more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
+        cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
+    '''
     img = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
 
-    for f, prob in zip(augmentations, aug_prob):
-        img = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(x), lambda: x)
+    for f, prob in zip(augmentations, args.aug_prob):
+        img = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img), lambda: img)
+
     img = tf.clip_by_value(img, 0, 1)
 
     # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
 
-    # # resize the image to the desired size.
-    return tf.image.resize(img, [120, 192]), img_crop[1] == args.CLASS_NAMES
+    return img, img_crop[1] == args.CLASS_NAMES
 
-def load_dataset(args):
-    tf.random.set_seed(args.manualSeed)
-    np.random.seed(args.manualSeed)
-    random.seed(args.manualSeed)
-    args.imgs_paths = np.array([str(x) for x in args.imgs_paths])
-    pre_process = functools.partial(pre_process_, args.CLASS_NAMES)
+@tf.function
+def pre_process(img_crop):
+    # convert the compressed string to a 3D uint8 tensor
+    img = tf.image.decode_png(img_crop[0], channels=3)
+    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+    img = tf.image.convert_image_dtype(img, tf.float32)
 
-    data_split_ind = np.random.permutation(args.imgs_paths.shape[0])
+    img = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+
+    # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
+
+    return img, img_crop[1] == args.CLASS_NAMES
+
+
+############################################# data loader #######################################
+dataset_train_list = []
+dataset_valid_list = []
+dataset_test_list = []
+
+for cls in args.CLASS_NAMES:
+    data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
 
-    dataset_train = tf.data.Dataset.from_tensor_slices(args.imgs_paths[train_ind])  # .float().to(args.device)
-    dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
+    dataset_train = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][train_ind], crops[crops==cls][train_ind])))  # .float().to(args.device)
+    dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
     # dataset_train = dataset_train.shuffle(buffer_size=len(train)).batch(batch_size=args.batch_dim).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_valid = tf.data.Dataset.from_tensor_slices(args.imgs_paths[val_ind])  # .float().to(args.device)
-    dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
+    dataset_valid = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][val_ind], crops[crops==cls][val_ind])))  # .float().to(args.device)
+    dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
     # dataset_valid = dataset_valid.batch(batch_size=args.batch_dim*2).prefetch(buffer_size=args.prefetch_size)
 
-    dataset_test = tf.data.Dataset.from_tensor_slices(args.imgs_paths[test_ind])  # .float().to(args.device)
-    dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=args.parallel).batch(
+    dataset_test = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][test_ind], crops[crops==cls][test_ind])))  # .float().to(args.device)
+    dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
 
-    return dataset_train, dataset_valid, dataset_test
+#################################################################
 
 def create_model(args):
 
@@ -162,7 +188,7 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
-        for x, y in train_ds:
+        for x, y in zip(train_ds):
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
@@ -181,11 +207,12 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
 
-        # test_loss=[]
-        # for ind in batch(test_ind, 2*args.batch_dim):
-        #     loss = tf.reduce_mean(tf.math.squared_difference(quality_y[ind,:], model(imgs[ind,:,:,:], training=False))).numpy()
-        #     test_loss.append(loss)
-        # test_loss = tf.reduce_mean(test_loss)
+        test_loss=[]
+        for x, y in test_ds:
+            with tf.GradientTape() as tape:
+                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+            test_loss.append(loss)
+        test_loss = tf.reduce_mean(test_loss)
 
         # print("test loss:  " + str(test_loss))
 
@@ -194,7 +221,7 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         #### tensorboard
         # tf.summary.scalar('loss/train', train_loss, tf.compat.v1.train.get_global_step())
         tf.summary.scalar('loss/validation', validation_loss, globalstep)
-        # tf.summary.scalar('loss/test', test_loss, globalstep) ##tf.compat.v1.train.get_global_step()
+        tf.summary.scalar('loss/test', test_loss, globalstep) ##tf.compat.v1.train.get_global_step()
 
         if stop:
             break
@@ -208,21 +235,6 @@ def load_model(args, root):
 # config.gpu_options.allow_growth = True
 # config.log_device_placement = True
 # tf.compat.v1.enable_eager_execution(config=config)
-
-# tf.config.experimental_run_functions_eagerly(True)
-gpus = tf.config.experimental.list_physical_devices('GPU')
-if gpus:
-    try:
-        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
-        # Currently, memory growth needs to be the same across GPUs
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-    except RuntimeError as e:
-        # Memory growth must be set before GPUs have been initialized
-        print(e)
-
 
 
 

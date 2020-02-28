@@ -57,26 +57,26 @@ class RandomResizedCrop(object):
         area = height * width
 
         for attempt in range(10):
-            target_area = random.uniform(*scale) * area
-            log_ratio = (math.log(ratio[0]), math.log(ratio[1]))
-            aspect_ratio = math.exp(random.uniform(*log_ratio))
+            target_area = tf.random.uniform(*scale) * area
+            log_ratio = (tf.math.log(ratio[0]), tf.math.log(ratio[1]))
+            aspect_ratio = tf.math.exp(tf.random.uniform(*log_ratio))
 
-            w = int(round(math.sqrt(target_area * aspect_ratio)))
-            h = int(round(math.sqrt(target_area / aspect_ratio)))
+            w = int(round(tf.math.sqrt(target_area * aspect_ratio)))
+            h = int(round(tf.math.sqrt(target_area / aspect_ratio)))
 
             if 0 < w <= width and 0 < h <= height:
-                i = random.randint(0, height - h)
-                j = random.randint(0, width - w)
+                i = tf.random.randint(0, height - h)
+                j = tf.random.randint(0, width - w)
                 return i, j, h, w
 
         # Fallback to central crop
         in_ratio = float(width) / float(height)
         if (in_ratio < min(ratio)):
             w = width
-            h = int(round(w / min(ratio)))
+            h = int(round(w / tf.reduce_min(ratio)))
         elif (in_ratio > max(ratio)):
             h = height
-            w = int(round(h * max(ratio)))
+            w = int(round(h * tf.reduce_max(ratio)))
         else:  # whole image
             w = width
             h = height
@@ -168,9 +168,9 @@ def zoom(x):
         # Create different crops for an image
         crops = tf.image.crop_and_resize([img], boxes=boxes, box_ind=np.zeros(len(scales)), crop_size=(32, 32))
         # Return a random crop
-        return crops[tf.random_uniform(shape=[], minval=0, maxval=len(scales), dtype=tf.int32)]
+        return crops[tf.random.uniform(shape=[], minval=0, maxval=len(scales), dtype=tf.int32)]
 
-    choice = tf.random_uniform(shape=[], minval=0., maxval=1., dtype=tf.float32)
+    choice = tf.random.uniform(shape=[], minval=0., maxval=1., dtype=tf.float32)
 
     # Only apply cropping 50% of the time
     return tf.cond(choice < 0.5, lambda: x, lambda: random_crop(x))
