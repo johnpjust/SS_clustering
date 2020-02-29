@@ -126,7 +126,7 @@ dataset_train_list = []
 dataset_valid_list = []
 dataset_test_list = []
 
-for cls in args.CLASS_NAMES:
+for cls in args.CLASS_NAMES[:3]:
     data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
@@ -146,7 +146,20 @@ for cls in args.CLASS_NAMES:
     dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
 
+    dataset_train_list.append(dataset_train)
+    dataset_valid_list.append(dataset_valid)
+    dataset_test_list.append(dataset_test)
+
 #################################################################
+tf.keras.applications.ResNet50V2
+
+tf.data.Dataset.zip(tuple(dataset_train_list))
+tf.data.Dataset.zip(tuple(dataset_valid_list))
+tf.data.Dataset.zip(tuple(dataset_test_list))
+
+
+ds_2_test = tf.data.Dataset.zip(tuple(dataset_test_list))
+imgss = np.array([element for tupl in temp for element in tupl])
 
 def create_model(args):
 
@@ -188,7 +201,9 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
-        for x, y in zip(train_ds):
+        for element in train_ds:
+            x = tf.concat([el[0] for el in element], axis=0)
+            y = tf.concat([el[1] for el in element], axis=0)
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True)))
             grads = tape.gradient(loss, model.trainable_variables)
@@ -200,7 +215,9 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         ## variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='batch_normalization')
 
         validation_loss = []
-        for x, y in val_ds:
+        for element in val_ds:
+            x = tf.concat([el[0] for el in element], axis=0)
+            y = tf.concat([el[1] for el in element], axis=0)
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             validation_loss.append(loss)
@@ -208,7 +225,9 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         # print("validation loss:  " + str(validation_loss))
 
         test_loss=[]
-        for x, y in test_ds:
+        for element in test_ds:
+            x = tf.concat([el[0] for el in element], axis=0)
+            y = tf.concat([el[1] for el in element], axis=0)
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             test_loss.append(loss)
