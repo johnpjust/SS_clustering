@@ -150,16 +150,17 @@ for cls in args.CLASS_NAMES[:3]:
     dataset_valid_list.append(dataset_valid)
     dataset_test_list.append(dataset_test)
 
+tf.keras.layers.BatchNormalization
 #################################################################
-tf.keras.applications.ResNet50V2
 
 tf.data.Dataset.zip(tuple(dataset_train_list))
 tf.data.Dataset.zip(tuple(dataset_valid_list))
 tf.data.Dataset.zip(tuple(dataset_test_list))
 
+################# create Model ################
 
-ds_2_test = tf.data.Dataset.zip(tuple(dataset_test_list))
-imgss = np.array([element for tupl in temp for element in tupl])
+model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
+
 
 def create_model(args):
 
@@ -249,29 +250,6 @@ def load_model(args, root):
     print('Loading model..')
     root.restore(tf.train.latest_checkpoint(args.load or args.path))
 
-
-# config = tf.compat.v1.ConfigProto()
-# config.gpu_options.allow_growth = True
-# config.log_device_placement = True
-# tf.compat.v1.enable_eager_execution(config=config)
-
-
-
-
-# ### organize data for ease of processing/training/reading
-# args.imgs_paths = np.array(list(Path(args.datapath).rglob('*.png')))
-# classes = np.array([crop_pat.search(x.parts[-4])[0] for x in args.imgs_paths])
-#
-# img_list = []
-# for xx in args.imgs_paths:
-#     img_list.append(tf.io.read_file(str(xx)).numpy())
-#
-# np.save('J:\SaS\imgs_raw_coded_png_bytes.npy', np.array(img_list))
-#
-# fn_time_list = []
-# for crop, p in zip(classes, [s for s in args.imgs_paths]):
-#     fn_time_list.append((str(p.relative_to(r'J:\SaS')), float(gpstime_pat.search(ntpath.split(p)[1])[0]), crop))
-# np.save(r'J:\SaS\fn_time_crop.npy', np.array(fn_time_list))
 
 print('Loading dataset..')
 train_ds, val_ds, test_ds = load_dataset(args)
