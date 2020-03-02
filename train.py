@@ -158,8 +158,8 @@ tf.data.Dataset.zip(tuple(dataset_valid_list))
 tf.data.Dataset.zip(tuple(dataset_test_list))
 
 ################# create Model ################
-
-model = resnet_models.ResNet50V2(input_shape=(40,40,3,), include_top=False, weights=None, actfun = 'relu', pooling='avg')
+img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
+model = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
 model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
 
 def create_model(args):
