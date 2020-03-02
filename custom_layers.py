@@ -1,26 +1,45 @@
 import tensorflow as tf
+from tensorflow import keras
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.framework import ops
-from tensorflow.python.keras import backend as K
+# from tensorflow.python.keras import backend as K
 from tensorflow.python.ops import nn
 
-class batch_norm_agg(tf.keras.layers.BatchNormalization):
+from tensorflow.python.keras.layers import normalization
+import tensorflow as tf
+
+class batch_norm_agg(normalization.BatchNormalizationBase):
 
     bn_state = 0
     bn_update_cntr = 0
+    agg_mean = 0
+    agg_var = 0
 
+    # @tf.function
     def call(self, inputs, training=None):
 
-        if self.bn_state > 0 and training == False: ## inference using aggregated parameters
+        if training is None:
+            training_value = None
+            training = self._get_training_value(training)
+        else:
+            training = self._get_training_value(training)
+            training_value = tf_utils.constant_value(training)
+
+
+        if self.bn_state > 0 and training_value == False: ## inference using aggregated parameters
             self.bn_state = 2
-        elif self.bn_state == 0 and training == None: ## act as normal training mode
-            training = True
+        elif self.bn_state == 1:
+            training_value = True
+        elif self.bn_state == 0 and training_value == None: ## act as normal training mode
+            training_value = True
             self.bn_state = 1
-        elif training == True: ## act as normal training mode
+        elif training_value == True: ## act as normal training mode
             self.bn_state = 0
             self.bn_update_cntr = 0
+            self.agg_mean = 0
+            self.agg_var = 0
 
 
         if self.virtual_batch_size is not None:
@@ -73,8 +92,16 @@ class batch_norm_agg(tf.keras.layers.BatchNormalization):
             return (scale, offset)
 
         # Determine a boolean value for `training`: could be True, False, or None.
-        training_value = tf_utils.constant_value(training)
+        # training_value = tf_utils.constant_value(training)
         if training_value == False:  # pylint: disable=singleton-comparison,g-explicit-bool-comparison
+            if self.bn_state == 2 and self.bn_update_cntr > 0:
+                self.moving_mean = self.agg_mean/self.bn_update_cntr
+                self.moving_variance = self.agg_var / self.bn_update_cntr
+                self.bn_state = 0
+                self.agg_mean = 0
+                self.agg_var = 0
+                self.bn_update_cntr = 0
+
             mean, variance = self.moving_mean, self.moving_variance
         else:
             if self.adjustment:
@@ -95,6 +122,10 @@ class batch_norm_agg(tf.keras.layers.BatchNormalization):
                 math_ops.cast(inputs, self._param_dtype),
                 reduction_axes,
                 keep_dims=keep_dims)
+            if self.bn_state == 1:
+                self.agg_mean += mean
+                self.agg_var += variance
+                self.bn_update_cntr += 1
 
             moving_mean = self.moving_mean
             moving_variance = self.moving_variance
@@ -132,40 +163,40 @@ class batch_norm_agg(tf.keras.layers.BatchNormalization):
                 d = _broadcast(array_ops.stop_gradient(d, name='renorm_d'))
                 scale, offset = _compose_transforms(r, d, scale, offset)
 
-            def _do_update(var, value):
-                """Compute the updates for mean and variance."""
-                return self._assign_moving_average(var, value, self.momentum,
-                                                   inputs_size)
-
-            def mean_update():
-                true_branch = lambda: _do_update(self.moving_mean, new_mean)
-                false_branch = lambda: self.moving_mean
-                return tf_utils.smart_cond(training, true_branch, false_branch)
-
-            def variance_update():
-                """Update the moving variance."""
-
-                def true_branch_renorm():
-                    # We apply epsilon as part of the moving_stddev to mirror the training
-                    # code path.
-                    moving_stddev = _do_update(self.moving_stddev,
-                                               math_ops.sqrt(new_variance + self.epsilon))
-                    return self._assign_new_value(
-                        self.moving_variance,
-                        # Apply relu in case floating point rounding causes it to go
-                        # negative.
-                        K.relu(moving_stddev * moving_stddev - self.epsilon))
-
-                if self.renorm:
-                    true_branch = true_branch_renorm
-                else:
-                    true_branch = lambda: _do_update(self.moving_variance, new_variance)
-
-                false_branch = lambda: self.moving_variance
-                return tf_utils.smart_cond(training, true_branch, false_branch)
-
-            self.add_update(mean_update)
-            self.add_update(variance_update)
+            # def _do_update(var, value):
+            #     """Compute the updates for mean and variance."""
+            #     return self._assign_moving_average(var, value, self.momentum,
+            #                                        inputs_size)
+            #
+            # def mean_update():
+            #     true_branch = lambda: _do_update(self.moving_mean, new_mean)
+            #     false_branch = lambda: self.moving_mean
+            #     return tf_utils.smart_cond(training, true_branch, false_branch)
+            #
+            # def variance_update():
+            #     """Update the moving variance."""
+            #
+            #     def true_branch_renorm():
+            #         # We apply epsilon as part of the moving_stddev to mirror the training
+            #         # code path.
+            #         moving_stddev = _do_update(self.moving_stddev,
+            #                                    math_ops.sqrt(new_variance + self.epsilon))
+            #         return self._assign_new_value(
+            #             self.moving_variance,
+            #             # Apply relu in case floating point rounding causes it to go
+            #             # negative.
+            #             K.relu(moving_stddev * moving_stddev - self.epsilon))
+            #
+            #     if self.renorm:
+            #         true_branch = true_branch_renorm
+            #     else:
+            #         true_branch = lambda: _do_update(self.moving_variance, new_variance)
+            #
+            #     false_branch = lambda: self.moving_variance
+            #     return tf_utils.smart_cond(training, true_branch, false_branch)
+            #
+            # self.add_update(mean_update)
+            # self.add_update(variance_update)
 
         mean = math_ops.cast(mean, inputs.dtype)
         variance = math_ops.cast(variance, inputs.dtype)
@@ -187,3 +218,6 @@ class batch_norm_agg(tf.keras.layers.BatchNormalization):
         if self.virtual_batch_size is not None:
             outputs = undo_virtual_batching(outputs)
         return outputs
+
+
+

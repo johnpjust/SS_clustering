@@ -13,7 +13,7 @@ import functools
 import re
 from pathlib import Path
 import ntpath
-from augmentations import *
+import resnet_models
 
 crop_pat = re.compile('(?<=_)(?:.(?!_))+$')
 gpstime_pat = re.compile('\d+\.\d+')
@@ -159,8 +159,8 @@ tf.data.Dataset.zip(tuple(dataset_test_list))
 
 ################# create Model ################
 
+model = resnet_models.ResNet50V2(input_shape=(40,40,3,), include_top=False, weights=None, actfun = 'relu', pooling='avg')
 model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
-
 
 def create_model(args):
 
