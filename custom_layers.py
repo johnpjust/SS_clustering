@@ -28,17 +28,25 @@ class batch_norm_agg(normalization.BatchNormalizationBase):
                     if self.bn_state == 1:
                         self.agg_mean += value
                     elif self.bn_state == 2:
-                        self.agg_mean = agg_malue
-                        self.agg_var += variance
-                        self.bn_update_cntr += 1
+                        if self.bn_update_cntr > 0:
+                            self.agg_mean = self.agg_mean/self.bn_update_cntr
+                            update_delta = math_ops.cast(self.agg_mean, variable.dtype)
+                            if inputs_size is not None:
+                                update_delta = array_ops.where(inputs_size > 0, update_delta, K.zeros_like(update_delta))
+                            return state_ops.assign(variable, update_delta, name=scope)
                 elif 'moving_variance' in variable.name:
-                    pass
+                    if self.bn_state == 1:
+                        self.agg_var += value
+                        self.bn_update_cntr += 1
+                    elif self.bn_state == 2:
+                        if self.bn_update_cntr > 0:
+                            self.agg_var = self.agg_var/self.bn_update_cntr
+                            update_delta = math_ops.cast(self.agg_var, variable.dtype)
+                            if inputs_size is not None:
+                                update_delta = array_ops.where(inputs_size > 0, update_delta, K.zeros_like(update_delta))
+                            return state_ops.assign(variable, update_delta, name=scope)
 
-                update_delta = (variable - math_ops.cast(value, variable.dtype)) * decay
-                if inputs_size is not None:
-                    update_delta = array_ops.where(inputs_size > 0, update_delta, K.zeros_like(update_delta))
-                return state_ops.assign_sub(variable, update_delta, name=scope)
-
+                return state_ops.assign(variable, variable, name=scope)
 
 
     def call(self, inputs, training=None):
@@ -52,15 +60,25 @@ class batch_norm_agg(normalization.BatchNormalizationBase):
         if training_value == False:
             self.bn_state = 0
             self.bn_update_cntr = 0
-            self.agg_mean = 0
-            self.agg_var = 0
-        elif self.bn_state > 0 and training_value == True:  ## inference using aggregated parameters
+            self.agg_mean = K.zeros_like(self.moving_mean)
+            self.agg_var = K.zeros_like(self.moving_variance)
+        elif self.bn_state > 0 and training_value == None:  ## inference using aggregated parameters
             self.bn_state = 2
-        elif self.bn_state == 0 and training_value == None:  ## act as normal training mode
+            if self._support_zero_size_input():
+                inputs_size = array_ops.size(inputs)
+            else:
+                inputs_size = None
+            self._assign_moving_average(self.moving_mean, 0, 0, inputs_size)
+            self._assign_moving_average(self.moving_variance, 0, 0, inputs_size)
+            self.bn_state = 0
+            self.bn_update_cntr = 0
+            self.agg_mean = K.zeros_like(self.moving_mean)
+            self.agg_var = K.zeros_like(self.moving_variance)
+        elif self.bn_state == 0 and training_value == True:  ## act as normal training mode
             self.bn_state = 1
             self.bn_update_cntr = 0
-            self.agg_mean = 0
-            self.agg_var = 0
+            self.agg_mean = K.zeros_like(self.moving_mean)
+            self.agg_var = K.zeros_like(self.moving_variance)
 
         if self.virtual_batch_size is not None:
             # Virtual batches (aka ghost batches) can be simulated by reshaping the
