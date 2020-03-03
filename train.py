@@ -150,53 +150,59 @@ for cls in args.CLASS_NAMES[:3]:
     dataset_valid_list.append(dataset_valid)
     dataset_test_list.append(dataset_test)
 
-tf.keras.layers.BatchNormalization
+# tf.keras.layers.BatchNormalization
 #################################################################
 
-tf.data.Dataset.zip(tuple(dataset_train_list))
-tf.data.Dataset.zip(tuple(dataset_valid_list))
-tf.data.Dataset.zip(tuple(dataset_test_list))
+train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
+val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
+test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
 ################# create Model ################
 img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
-model = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
-model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
-
-def create_model(args):
-
-    tf.random.set_seed(args.manualSeedw)
-    np.random.seed(args.manualSeedw)
-
-    actfun = tf.nn.elu
-
-    inputs = tf.keras.Input(shape=args.img_size, name='img')  ## (108, 192, 3)
-    x = layers.Conv2D(32, 7, activation=actfun, strides=3)(inputs)
-    block_output = layers.Conv2D(32,3,strides=2, activation=None)(x)
-    # block_output = layers.MaxPooling2D(3, strides=2)(x)
-
-    x = actfun(block_output)
-    x = layers.Conv2D(32, 1, activation=actfun, padding='same')(x)
-    x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
-    x = layers.add([x, block_output])
-    x = layers.Conv2D(64, 1, activation=actfun)(x)
-    block_output = layers.MaxPooling2D(pool_size=3, strides=2)(x)
-
-    x = layers.Conv2D(64, 1, activation=actfun, padding='same')(block_output)
-    x = layers.Conv2D(64, 3, activation=None, padding='same')(x)
-    x = layers.add([x, block_output])
-    x = layers.Conv2D(64, 1, activation=actfun)(x)
-    # block_output = layers.MaxPooling2D(2, strides=2)(x)
-
-    # x = layers.Conv2D(32, 1, activation=actfun)(x)
-    # x = layers.Conv2D(32, 3, activation=None)(x)
-    x = layers.GlobalAveragePooling2D()(x)
-    x = layers.Flatten()(x)
-
-    x = layers.Dense(32, activation=actfun)(x)
+actfun = 'relu'
+with tf.device(args.device):
+    model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
+    x = layers.Dense(32, activation=actfun)(model_.output)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
-    model = tf.keras.Model(inputs, output, name='resnet_model')
-    model.summary()
-    return model
+    model = tf.keras.Model(model_.input, output, name='resnet_model')
+
+# model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
+
+# def create_model(args):
+#
+#     tf.random.set_seed(args.manualSeedw)
+#     np.random.seed(args.manualSeedw)
+#
+#     actfun = tf.nn.elu
+#
+#     inputs = tf.keras.Input(shape=args.img_size, name='img')  ## (108, 192, 3)
+#     x = layers.Conv2D(32, 7, activation=actfun, strides=3)(inputs)
+#     block_output = layers.Conv2D(32,3,strides=2, activation=None)(x)
+#     # block_output = layers.MaxPooling2D(3, strides=2)(x)
+#
+#     x = actfun(block_output)
+#     x = layers.Conv2D(32, 1, activation=actfun, padding='same')(x)
+#     x = layers.Conv2D(32, 3, activation=None, padding='same')(x)
+#     x = layers.add([x, block_output])
+#     x = layers.Conv2D(64, 1, activation=actfun)(x)
+#     block_output = layers.MaxPooling2D(pool_size=3, strides=2)(x)
+#
+#     x = layers.Conv2D(64, 1, activation=actfun, padding='same')(block_output)
+#     x = layers.Conv2D(64, 3, activation=None, padding='same')(x)
+#     x = layers.add([x, block_output])
+#     x = layers.Conv2D(64, 1, activation=actfun)(x)
+#     # block_output = layers.MaxPooling2D(2, strides=2)(x)
+#
+#     # x = layers.Conv2D(32, 1, activation=actfun)(x)
+#     # x = layers.Conv2D(32, 3, activation=None)(x)
+#     x = layers.GlobalAveragePooling2D()(x)
+#     x = layers.Flatten()(x)
+#
+#     x = layers.Dense(32, activation=actfun)(x)
+#     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
+#     model = tf.keras.Model(inputs, output, name='resnet_model')
+#     model.summary()
+#     return model
 
 def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
 
@@ -214,13 +220,19 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
 
         ## potentially update batch norm variables manually
         ## variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='batch_normalization')
+        ## update batch norm "moving averages" prior to validation.  Follow "state" path
+        model(x, training=False) ## clear MA values
+        for element in train_ds:
+            x = tf.concat([el[0] for el in element], axis=0)
+            model(x, training=True) ## aggregate BN values with weights frozen
+
+        model(x, training=None) ## update MA values
 
         validation_loss = []
         for element in val_ds:
             x = tf.concat([el[0] for el in element], axis=0)
             y = tf.concat([el[1] for el in element], axis=0)
-            with tf.GradientTape() as tape:
-                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss = tf.reduce_mean(validation_loss)
         # print("validation loss:  " + str(validation_loss))
@@ -229,8 +241,7 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         for element in test_ds:
             x = tf.concat([el[0] for el in element], axis=0)
             y = tf.concat([el[1] for el in element], axis=0)
-            with tf.GradientTape() as tape:
-                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             test_loss.append(loss)
         test_loss = tf.reduce_mean(test_loss)
 
@@ -246,13 +257,13 @@ def train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args):
         if stop:
             break
 
-def load_model(args, root):
-    print('Loading model..')
-    root.restore(tf.train.latest_checkpoint(args.load or args.path))
+# def load_model(args, root):
+#     print('Loading model..')
+#     root.restore(tf.train.latest_checkpoint(args.load or args.path))
 
 
-print('Loading dataset..')
-train_ds, val_ds, test_ds = load_dataset(args)
+# print('Loading dataset..')
+# train_ds, val_ds, test_ds = load_dataset(args)
 
 
 if args.save and not args.load:
@@ -263,9 +274,9 @@ if args.save and not args.load:
 
 # pathlib.Path(args.tensorboard).mkdir(parents=True, exist_ok=True)
 
-print('Creating model..')
-with tf.device(args.device):
-    model = create_model(args)
+# print('Creating model..')
+# with tf.device(args.device):
+#     model = create_model(args)
 
 ## tensorboard and saving
 writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
@@ -281,8 +292,8 @@ root = tf.train.Checkpoint(optimizer=optimizer,
                            model=model,
                            optimizer_step=tf.compat.v1.train.get_global_step())
 
-if args.load:
-    load_model(args, root)
+# if args.load:
+#     load_model(args, root)
 
 print('Creating scheduler..')
 # use baseline to avoid saving early on
@@ -291,29 +302,29 @@ scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, 
 with tf.device(args.device):
     train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
-# ###################### inference #################################
-    embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds')
-
-    # train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
-    # train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/128.0 - 1
-    # test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
-    # test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/128.0 - 1
-    # all_data = np.concatenate((train_data, test_data))
-
-    rand_crops_embeds = []
-    for x in batch(imgs, 2*args.batch_dim):
-        rand_crops_embeds.extend(embeds(x))
-
-    rand_crops_embeds = np.stack(rand_crops_embeds)
-
-    np.savetxt(r'C:\Users\justjo\PycharmProjects\furrowFeatureExtractor\tensorboard\furrowfeat_2020-01-30-18-58-47\embeds.csv', rand_crops_embeds, delimiter=',')
-
-    import matplotlib.pyplot as plt
-    from sklearn.neighbors import NearestNeighbors
-    nbrs = NearestNeighbors(n_neighbors=6, algorithm='ball_tree').fit(rand_crops_embeds)
-    # distances, indices = nbrs.kneighbors(np.array([-0.35703278, -0.33590597, -0.8081483 , -0.01309389]).reshape(-1,4))  ## rand_crops_embeds[30212,:] [-0.84653145, -0.14351833, -0.8278878 , -0.7618342 ]
-    distances, indices = nbrs.kneighbors(np.array([-0.24539942, -0.5202056 , -0.61923814, -0.25972468]).reshape(-1, 4))
-    plt.figure();plt.imshow(np.uint8(imgs[indices[0][5]]*255))
+# # ###################### inference #################################
+#     embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds')
+#
+#     # train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
+#     # train_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in train_data])/128.0 - 1
+#     # test_data = glob.glob(r'D:\GQC_Images\GQ_Images\test_images_broken/*.png')
+#     # test_data = np.vstack([np.expand_dims(img_load(x, args), axis=0) for x in test_data])/128.0 - 1
+#     # all_data = np.concatenate((train_data, test_data))
+#
+#     rand_crops_embeds = []
+#     for x in batch(imgs, 2*args.batch_dim):
+#         rand_crops_embeds.extend(embeds(x))
+#
+#     rand_crops_embeds = np.stack(rand_crops_embeds)
+#
+#     np.savetxt(r'C:\Users\justjo\PycharmProjects\furrowFeatureExtractor\tensorboard\furrowfeat_2020-01-30-18-58-47\embeds.csv', rand_crops_embeds, delimiter=',')
+#
+#     import matplotlib.pyplot as plt
+#     from sklearn.neighbors import NearestNeighbors
+#     nbrs = NearestNeighbors(n_neighbors=6, algorithm='ball_tree').fit(rand_crops_embeds)
+#     # distances, indices = nbrs.kneighbors(np.array([-0.35703278, -0.33590597, -0.8081483 , -0.01309389]).reshape(-1,4))  ## rand_crops_embeds[30212,:] [-0.84653145, -0.14351833, -0.8278878 , -0.7618342 ]
+#     distances, indices = nbrs.kneighbors(np.array([-0.24539942, -0.5202056 , -0.61923814, -0.25972468]).reshape(-1, 4))
+#     plt.figure();plt.imshow(np.uint8(imgs[indices[0][5]]*255))
 
 # if __name__ == '__main__':
 #     main()
