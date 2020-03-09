@@ -432,8 +432,7 @@ def ResNet(stack_fn,
     bn_axis = 3 if backend.image_data_format() == 'channels_last' else 1
 
     x = layers.ZeroPadding2D(padding=((3, 3), (3, 3)), name='conv1_pad')(img_input)
-    x = layers.Conv2D(64, 7, strides=2, use_bias=use_bias, name='conv1_conv')(x)
-
+    x = layers.Conv2D(64, 3, strides=2, use_bias=use_bias, name='conv1_conv')(x) ## filter size originally = 7
     if preact is False:
         x = batch_norm_agg(axis=bn_axis, epsilon=1.001e-5,
                                       name='conv1_bn')(x)
@@ -546,9 +545,9 @@ def ResNet50V2(include_top=True,
                **kwargs):
     def stack_fn(x):
         x = stack2(x, 64, 3, name='conv2', actfun=actfun)
-        # x = stack2(x, 128, 4, name='conv3', actfun=actfun)
-        # x = stack2(x, 256, 6, name='conv4', actfun=actfun)
-        # x = stack2(x, 512, 3, stride1=1, name='conv5', actfun=actfun)
+        x = stack2(x, 128, 4, name='conv3', actfun=actfun)
+        x = stack2(x, 256, 6, name='conv4', actfun=actfun)
+        x = stack2(x, 512, 3, stride1=1, name='conv5', actfun=actfun)
         return x
     return ResNet(stack_fn, True, True, 'resnet50v2',
                   include_top, weights,

@@ -15,6 +15,11 @@ from pathlib import Path
 import ntpath
 import resnet_models
 
+from tensorflow.keras import backend as K
+def swish_activation(x):
+        return (K.sigmoid(x) * x)
+tf.keras.utils.get_custom_objects().update({'swish': tf.keras.layers.Activation(swish_activation)})
+
 crop_pat = re.compile('(?<=_)(?:.(?!_))+$')
 gpstime_pat = re.compile('\d+\.\d+')
 
@@ -28,8 +33,8 @@ args.epochs = 5000
 args.patience = 10
 args.load = r''
 args.save = True
-args.tensorboard = r'C:\Users\justjo\PycharmProjects\S&S_clustering\tensorboard'
-args.early_stopping = 10
+args.tensorboard = r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard'
+args.early_stopping = 50
 args.manualSeed = None
 args.manualSeedw = None
 args.prefetch_size = 10  # data pipeline prefetch buffer size
@@ -37,11 +42,12 @@ args.parallel = 8  # data pipeline parallel processes
 args.preserve_aspect_ratio = True;  ##when resizing
 args.p_val = 0.2
 args.downscale = 10
-args.take = 50
-args.batch_dim = 10
+args.take = 1000
+args.batch_dim = 100
 args.crop_size = [40, 40, 3]
+args.spacing = 10
 
-args.path = os.path.join(args.tensorboard, 'furrowfeat_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
+args.path = os.path.join(args.tensorboard, 'SaS_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
 
 imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
@@ -120,13 +126,12 @@ def pre_process(img_crop):
 
     return img, img_crop[1] == args.CLASS_NAMES
 
-
 ############################################# data loader #######################################
 dataset_train_list = []
 dataset_valid_list = []
 dataset_test_list = []
 
-for cls in args.CLASS_NAMES[:3]:
+for cls in args.CLASS_NAMES:
     data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
@@ -150,6 +155,7 @@ for cls in args.CLASS_NAMES[:3]:
     dataset_valid_list.append(dataset_valid)
     dataset_test_list.append(dataset_test)
 
+
 # tf.keras.layers.BatchNormalization
 #################################################################
 
@@ -158,10 +164,11 @@ val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
 test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
 ################# create Model ################
-img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
-actfun = 'relu'
+# img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
+actfun = 'swish'
 with tf.device(args.device):
-    model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
+    # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
+    model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
     x = layers.Dense(32, activation=actfun)(model_.output)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
     model = tf.keras.Model(model_.input, output, name='resnet_model')
@@ -289,8 +296,7 @@ print('Creating optimizer..')
 with tf.device(args.device):
     optimizer = tf.optimizers.Adam()
 root = tf.train.Checkpoint(optimizer=optimizer,
-                           model=model,
-                           optimizer_step=tf.compat.v1.train.get_global_step())
+                           model=model)
 
 # if args.load:
 #     load_model(args, root)
@@ -303,6 +309,41 @@ with tf.device(args.device):
     train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
 # # ###################### inference #################################
+@tf.function
+def pre_process_inference(img_crop):
+    # convert the compressed string to a 3D uint8 tensor
+    img = tf.image.decode_png(img_crop[0], channels=3)
+    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+    img = tf.image.convert_image_dtype(img, tf.float32)
+
+    rand_box_size = np.int(img.shape[0] * args.crop_size)
+    rand_box = np.array([rand_box_size, rand_box_size, 3])
+    # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
+    rows = img.shape[0] - args.crop_size[0]
+    cols = img.shape[1] - args.crop_size[1]
+    heatmap = np.zeros((np.int(rows / args.spacing), np.int(cols / args.spacing), 256))
+    im_breakup_array = np.zeros((np.int(cols / args.spacing), rand_box_size * rand_box_size * 3), dtype=np.float32)
+    with tf.device(args.device):
+        for i in range(np.int(rows / args.spacing) * args.spacing):
+            if not i % args.spacing:
+                for j in range(np.int(cols / args.spacing) * args.spacing):
+                    if not j % args.spacing:
+                        im_breakup_array[np.int(j / args.spacing), :] = tf.image.crop_to_bounding_box(img, i, j, rand_box_size, rand_box_size)
+                heatmap[np.int(i / args.spacing), :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
+
+    return img
+
+
+dataset_full = tf.data.Dataset.from_tensor_slices(imgs_raw)  # .float().to(args.device)
+dataset_full = dataset_full.map(pre_process_inference, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
+    batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+
+embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds') ## might just directly use model(input).layers[-3].output  ???
+#################################################################
+
+
+
+
 #     embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds')
 #
 #     # train_data = glob.glob(r'D:\GQC_Images\GQ_Images\Corn_2017_2018/*.png')
@@ -330,4 +371,5 @@ with tf.device(args.device):
 #     main()
 
 #### tensorboard --logdir=C:\Users\justjo\PycharmProjects\furrowFeatureExtractor\tensorboard
+#### tensorboard --logdir=C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard
 ## http://localhost:6006/

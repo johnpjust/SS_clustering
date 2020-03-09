@@ -37,7 +37,7 @@ class EarlyStopping:
                verbose=0,
                mode='min',
                baseline=None,
-               restore_best_weights=True,
+               restore_best_weights=False,
                args = None,
                root = None):
         #super(EarlyStopping, self).__init__()
