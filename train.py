@@ -169,7 +169,8 @@ actfun = 'swish'
 with tf.device(args.device):
     # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
     model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
-    x = layers.Dense(32, activation=actfun)(model_.output)
+    x = layers.Dense(256, activation=None)(model_.output)
+    x = layers.Dense(32, activation=actfun)(x)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
     model = tf.keras.Model(model_.input, output, name='resnet_model')
 
@@ -308,37 +309,34 @@ scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, 
 with tf.device(args.device):
     train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
-# # ###################### inference #################################
-@tf.function
-def pre_process_inference(img_crop):
-    # convert the compressed string to a 3D uint8 tensor
-    img = tf.image.decode_png(img_crop[0], channels=3)
-    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    img = tf.image.convert_image_dtype(img, tf.float32)
+############################################ inference ###############################################################
+# model = tf.keras.models.load_model(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\best_model')
+# dataset_test_list = []
+#
+# for cls in args.CLASS_NAMES:
+#     data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
+#     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
+#
+#     dataset_test = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][test_ind], crops[crops==cls][test_ind])))  # .float().to(args.device)
+#     dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
+#         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
+#
+#     dataset_test_list.append(dataset_test)
+#
+# test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
+#
+# test_loss = []
+# for element in test_ds:
+#     x = tf.concat([el[0] for el in element], axis=0)
+#     y = tf.concat([el[1] for el in element], axis=0)
+#     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+#     test_loss.append(loss)
+# test_loss = tf.reduce_mean(test_loss)
+#################################################################
 
-    rand_box_size = np.int(img.shape[0] * args.crop_size)
-    rand_box = np.array([rand_box_size, rand_box_size, 3])
-    # rand_box = np.append(tf.cast(tf.multiply(tf.cast(imgcre.shape[:2], tf.float32),tf.constant(0.1)), tf.int32).numpy(), [3])
-    rows = img.shape[0] - args.crop_size[0]
-    cols = img.shape[1] - args.crop_size[1]
-    heatmap = np.zeros((np.int(rows / args.spacing), np.int(cols / args.spacing), 256))
-    im_breakup_array = np.zeros((np.int(cols / args.spacing), rand_box_size * rand_box_size * 3), dtype=np.float32)
-    with tf.device(args.device):
-        for i in range(np.int(rows / args.spacing) * args.spacing):
-            if not i % args.spacing:
-                for j in range(np.int(cols / args.spacing) * args.spacing):
-                    if not j % args.spacing:
-                        im_breakup_array[np.int(j / args.spacing), :] = tf.image.crop_to_bounding_box(img, i, j, rand_box_size, rand_box_size)
-                heatmap[np.int(i / args.spacing), :] = compute_img_log_p_x(x_mb=im_breakup_array).numpy()
-
-    return img
 
 
-dataset_full = tf.data.Dataset.from_tensor_slices(imgs_raw)  # .float().to(args.device)
-dataset_full = dataset_full.map(pre_process_inference, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-    batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
 
-embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds') ## might just directly use model(input).layers[-3].output  ???
 #################################################################
 
 

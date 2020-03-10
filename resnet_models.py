@@ -431,15 +431,19 @@ def ResNet(stack_fn,
 
     bn_axis = 3 if backend.image_data_format() == 'channels_last' else 1
 
-    x = layers.ZeroPadding2D(padding=((3, 3), (3, 3)), name='conv1_pad')(img_input)
-    x = layers.Conv2D(64, 3, strides=2, use_bias=use_bias, name='conv1_conv')(x) ## filter size originally = 7
+    ## modified JJ
+    # x = layers.ZeroPadding2D(padding=((3, 3), (3, 3)), name='conv1_pad')(img_input)
+    # x = layers.Conv2D(64, 7, strides=2, use_bias=use_bias, name='conv1_conv')(x)
+    x = layers.Conv2D(64, 3, strides=1, use_bias=use_bias, name='conv1_conv')(img_input) ## modified JJ
+
     if preact is False:
         x = batch_norm_agg(axis=bn_axis, epsilon=1.001e-5,
                                       name='conv1_bn')(x)
         x = layers.Activation(actfun, name='conv1_' + actfun)(x)
 
-    x = layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name='pool1_pad')(x)
-    x = layers.MaxPooling2D(3, strides=2, name='pool1_pool')(x)
+    ## modified JJ
+    # x = layers.ZeroPadding2D(padding=((1, 1), (1, 1)), name='pool1_pad')(x)
+    # x = layers.MaxPooling2D(3, strides=2, name='pool1_pool')(x)
 
     x = stack_fn(x)
 
