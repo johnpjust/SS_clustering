@@ -97,3 +97,28 @@ if __name__ == "__main__":
 
     np.save(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\embeds', r)
 
+
+
+from sklearn.neighbors import NearestNeighbors
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+embeds = np.array(np.load(r'J:\SaS\embeds.npy', allow_pickle=True))
+# embeds_std = np.array([x.reshape(-1,32).std(axis=0) for x in embeds])
+embeds = np.array([x.reshape(-1,32).mean(axis=0) for x in embeds])
+embeds = embeds[:, embeds.std(axis=0)>0]
+# embeds_std = embeds_std[:, embeds_std.std(axis=0)>0]
+imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
+# embeds_stacked = np.hstack((embeds, embeds_std))
+nbrs = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds)
+# nbrs_std = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_std)
+# nbrs_stacked = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_stacked)
+_, indices = nbrs.kneighbors(embeds[8856].reshape(1,-1), 1000)
+# _, indices_std = nbrs_std.kneighbors(embeds_std[194485].reshape(1,-1), 1000)
+# _, indices_stacked = nbrs_std.kneighbors(embeds_std[200000].reshape(1,-1), 1000)
+
+fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
+crops = np.array([ii[2] for ii in fn_time_crop_list])

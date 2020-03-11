@@ -126,6 +126,18 @@ def pre_process(img_crop):
 
     return img, img_crop[1] == args.CLASS_NAMES
 
+
+################# create Model ################
+# img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
+actfun = 'swish'
+with tf.device(args.device):
+    # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
+    model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
+    x = layers.Dense(128, activation=None, activity_regularizer=tf.keras.regularizers.l1(0.0001))(model_.output)
+    x = layers.Dense(32, activation=actfun)(x)
+    output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
+    model = tf.keras.Model(model_.input, output, name='resnet_model')
+
 ############################################# data loader #######################################
 dataset_train_list = []
 dataset_valid_list = []
@@ -162,17 +174,6 @@ for cls in args.CLASS_NAMES:
 train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
 val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
 test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
-
-################# create Model ################
-# img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
-actfun = 'swish'
-with tf.device(args.device):
-    # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
-    model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
-    x = layers.Dense(256, activation=None)(model_.output)
-    x = layers.Dense(32, activation=actfun)(x)
-    output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
-    model = tf.keras.Model(model_.input, output, name='resnet_model')
 
 # model = tf.keras.applications.ResNet50V2(include_top=False, weights=None, actfun = 'relu')
 
