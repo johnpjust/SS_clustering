@@ -58,7 +58,6 @@ args.CLASS_NAMES, args.class_counts = np.unique(crops, return_counts=True)
 # args.class_weights = np.max(args.class_counts)/args.class_counts
 # args.class_weights = args.class_weights/np.sum(args.class_weights)
 
-
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
@@ -137,13 +136,13 @@ actfun = 'swish'
 with tf.device(args.device):
     # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
     model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
-    x = layers.Dense(128, activation=None, activity_regularizer=tf.keras.regularizers.l1(0.1),kernel_regularizer=tf.keras.regularizers.l1(0.00001))(model_.output)
+    feats = layers.Dense(128, activation=None, activity_regularizer=tf.keras.regularizers.l1(0.001),kernel_regularizer=tf.keras.regularizers.l1(0.00001))(model_.output)
     ## classification
-    x = layers.Dense(32, activation=actfun, kernel_regularizer=tf.keras.regularizers.l1(0.0001))(x)
+    x = layers.Dense(32, activation=actfun, kernel_regularizer=tf.keras.regularizers.l1(0.0001))(feats)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
     model = tf.keras.Model(model_.input, output, name='class_model')
     ## simclr
-    x = layers.Dense(32, activation=actfun, kernel_regularizer=tf.keras.regularizers.l1(0.0001))(x)
+    x = layers.Dense(32, activation=actfun, kernel_regularizer=tf.keras.regularizers.l1(0.0001))(feats)
     output = layers.Dense(32)(x)
     model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
 
@@ -152,7 +151,7 @@ dataset_train_list = []
 dataset_valid_list = []
 dataset_test_list = []
 
-for cls in args.CLASS_NAMES[:3]:
+for cls in args.CLASS_NAMES:
     data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
@@ -181,12 +180,13 @@ val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
 test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
 data = next(iter(test_ds))
+data = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in data], axis=0)
 
 def pair_cosine_similarity(x):
     normalized = tf.nn.l2_normalize(x, axis=1)
     return tf.matmul(normalized, normalized, adjoint_b=True)
 
-idx = np.arange(x.shape[0])
+idx = np.arange(data.shape[0])
 idx[::2] += 1
 idx[1::2] -= 1
 
@@ -202,17 +202,17 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
         for element in train_ds:
-            ############### fix this ####################
+            ############### arange data ####################
             x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            ###############################################
+            ################### self-supervised update ############################
             with tf.GradientTape() as tape:
                 loss = nt_xent(model_simclr(x, training=True)) + tf.reduce_mean(model_simclr.losses)
             grads = tape.gradient(loss, model_simclr.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer_simclr.apply_gradients(zip(grads, model_simclr.trainable_variables))
             tf.summary.scalar('loss/train_simclr', loss, globalstep)
-
+            ############### supervised classification update ####################
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True))) + tf.reduce_mean(model.losses)
             grads = tape.gradient(loss, model.trainable_variables)
@@ -227,7 +227,6 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         for element in train_ds:
             x = tf.concat([el[0] for el in element], axis=0)
             model(x, training=True) ## aggregate BN values with weights frozen
-
         model(x, training=None) ## update MA values
 
         validation_loss = []
@@ -235,8 +234,10 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         for element in val_ds:
             x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
+            ################### self-supervised update ############################
             loss = nt_xent(model_simclr(x, training=False)).numpy()
             validation_loss_simclr.append(loss)
+            ############### supervised classification update ####################
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss_simclr = tf.reduce_mean(validation_loss_simclr)
@@ -249,8 +250,10 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         for element in test_ds:
             x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
+            ################### self-supervised update #############################
             loss = nt_xent(model_simclr(x, training=False)).numpy()
             test_loss_simclr.append(loss)
+            ################## supervised classification update ####################
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             test_loss.append(loss)
         test_loss_simclr = tf.reduce_mean(test_loss_simclr)
@@ -280,10 +283,6 @@ if args.save and not args.load:
         json.dump(str(args.__dict__), f, indent=4, sort_keys=True)
 
 # pathlib.Path(args.tensorboard).mkdir(parents=True, exist_ok=True)
-
-# print('Creating model..')
-# with tf.device(args.device):
-#     model = create_model(args)
 
 ## tensorboard and saving
 writer = tf.summary.create_file_writer(os.path.join(args.tensorboard, args.load or args.path))
