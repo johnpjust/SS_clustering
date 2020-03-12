@@ -16,6 +16,8 @@ import ntpath
 import resnet_models
 from multiprocessing import Pool
 import tqdm
+from skimage import transform
+from sklearn.decomposition import PCA
 
 from tensorflow.keras import backend as K
 def swish_activation(x):
@@ -86,17 +88,28 @@ def pre_process_inference(img_crop):
 
     return heatmap
 
+def rescaler(img):
+    img = tf.image.decode_png(img, channels=3)
+    img = tf.image.convert_image_dtype(img, tf.float32)
+    return transform.rescale(img, 0.3, multichannel=True).reshape(-1)
 
 if __name__ == "__main__":
 
-
+    ## deep learning inference
     imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
-    # r = list(tqdm.tqdm(map(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
-    with Pool(16) as p:
-        r = list(tqdm.tqdm(p.imap(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
+    # # r = list(tqdm.tqdm(map(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
+    # with Pool(16) as p:
+    #     r = list(tqdm.tqdm(p.imap(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
+    #
+    # np.save(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\embeds', r)
 
-    np.save(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\embeds', r)
-
+    ## PCA
+    with Pool(8) as p:
+        r = np.array(list(tqdm.tqdm(p.imap(rescaler, imgs_raw), total=imgs_raw.shape[0])))
+    pca = PCA(n_components=10)
+    pca.fit(r)
+    X = pca.transform(r)
+    np.savetxt(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\PCA_embeds.csv', X, delimiter=',')
 
 
 from sklearn.neighbors import NearestNeighbors
@@ -122,3 +135,5 @@ _, indices = nbrs.kneighbors(embeds[8856].reshape(1,-1), 1000)
 
 fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
 crops = np.array([ii[2] for ii in fn_time_crop_list])
+
+
