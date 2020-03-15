@@ -68,8 +68,8 @@ if gpus:
         print(e)
 
 
-model = tf.keras.models.load_model(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\best_model')
-embeds = tf.keras.Model(model.input, model.layers[-2].output, name='embeds') ## might just directly use model(input).layers[-3].output  ???
+model = tf.keras.models.load_model(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-03-12-01-09-00\_model_simclr')
+# embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds') ## might just directly use model(input).layers[-3].output  ???
 def pre_process_inference(img_crop):
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_png(img_crop, channels=3)
@@ -78,13 +78,13 @@ def pre_process_inference(img_crop):
 
     rows = img.shape[0] - args.crop_size[0]
     cols = img.shape[1] - args.crop_size[1]
-    heatmap = np.zeros((np.int(rows / args.spacing)+1, np.int(cols / args.spacing)+1, embeds.output_shape[-1]))
+    heatmap = np.zeros((np.int(rows / args.spacing)+1, np.int(cols / args.spacing)+1, model.output_shape[-1]))
     im_breakup_array = np.zeros((np.int(cols / args.spacing)+1, *args.crop_size), dtype=np.float32)
     with tf.device(args.device):
         for i in range(0, rows+1, args.spacing):
             for j in range(0, cols+1, args.spacing):
                 im_breakup_array[np.int(j / args.spacing), :] = tf.image.crop_to_bounding_box(img, i, j, args.crop_size[0], args.crop_size[1])
-        heatmap[np.int(i / args.spacing), :] = embeds(im_breakup_array, training=False).numpy()
+            heatmap[np.int(i / args.spacing), :] = model(im_breakup_array, training=False).numpy()
 
     return heatmap
 
@@ -96,44 +96,44 @@ def rescaler(img):
 if __name__ == "__main__":
 
     ## deep learning inference
-    imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
-    # # r = list(tqdm.tqdm(map(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
-    # with Pool(16) as p:
-    #     r = list(tqdm.tqdm(p.imap(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
-    #
-    # np.save(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\embeds', r)
-
-    ## PCA
+    imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
+    # r = list(tqdm.tqdm(map(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
     with Pool(8) as p:
-        r = np.array(list(tqdm.tqdm(p.imap(rescaler, imgs_raw), total=imgs_raw.shape[0])))
-    pca = PCA(n_components=10)
-    pca.fit(r)
-    X = pca.transform(r)
-    np.savetxt(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\PCA_embeds.csv', X, delimiter=',')
+        r = list(tqdm.tqdm(p.imap(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
+
+    np.save(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-03-12-01-09-00\embeds_32', r)
+
+    # ## PCA
+    # with Pool(8) as p:
+    #     r = np.array(list(tqdm.tqdm(p.imap(rescaler, imgs_raw), total=imgs_raw.shape[0])))
+    # pca = PCA(n_components=10)
+    # pca.fit(r)
+    # X = pca.transform(r)
+    # np.savetxt(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\PCA_embeds.csv', X, delimiter=',')
 
 
-from sklearn.neighbors import NearestNeighbors
-import numpy as np
-import matplotlib.pyplot as plt
-import tensorflow as tf
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-
-embeds = np.array(np.load(r'J:\SaS\embeds.npy', allow_pickle=True))
-# embeds_std = np.array([x.reshape(-1,32).std(axis=0) for x in embeds])
-embeds = np.array([x.reshape(-1,32).mean(axis=0) for x in embeds])
-embeds = embeds[:, embeds.std(axis=0)>0]
-# embeds_std = embeds_std[:, embeds_std.std(axis=0)>0]
-imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
-# embeds_stacked = np.hstack((embeds, embeds_std))
-nbrs = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds)
-# nbrs_std = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_std)
-# nbrs_stacked = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_stacked)
-_, indices = nbrs.kneighbors(embeds[8856].reshape(1,-1), 1000)
-# _, indices_std = nbrs_std.kneighbors(embeds_std[194485].reshape(1,-1), 1000)
-# _, indices_stacked = nbrs_std.kneighbors(embeds_std[200000].reshape(1,-1), 1000)
-
-fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
-crops = np.array([ii[2] for ii in fn_time_crop_list])
+# from sklearn.neighbors import NearestNeighbors
+# import numpy as np
+# import matplotlib.pyplot as plt
+# import tensorflow as tf
+# import os
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+#
+# embeds = np.array(np.load(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-03-12-01-09-00\embeds_32.npy', allow_pickle=True))
+# # embeds_std = np.array([x.reshape(-1,32).std(axis=0) for x in embeds])
+# embeds = np.array([x.reshape(-1,32).mean(axis=0) for x in embeds])
+# embeds = embeds[:, embeds.std(axis=0)>0]
+# # embeds_std = embeds_std[:, embeds_std.std(axis=0)>0]
+# imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
+# # embeds_stacked = np.hstack((embeds, embeds_std))
+# nbrs = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds)
+# # nbrs_std = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_std)
+# # nbrs_stacked = NearestNeighbors(n_neighbors=100, algorithm='ball_tree').fit(embeds_stacked)
+# _, indices = nbrs.kneighbors(embeds[20000].reshape(1,-1), 1000)
+# # _, indices_std = nbrs_std.kneighbors(embeds_std[194485].reshape(1,-1), 1000)
+# # _, indices_stacked = nbrs_std.kneighbors(embeds_std[200000].reshape(1,-1), 1000)
+#
+# fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
+# crops = np.array([ii[2] for ii in fn_time_crop_list])
 
 
