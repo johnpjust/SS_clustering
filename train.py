@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 import ntpath
 import resnet_models
+import more_itertools as mit
 
 from tensorflow.keras import backend as K
 def swish_activation(x):
@@ -32,7 +33,7 @@ args.epochs = 5000
 args.patience = 10
 args.load = r''
 args.save = True
-args.tensorboard = r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard'
+args.tensorboard = r'D:\pycharm_projects\SaS\tensorboard'
 args.early_stopping = 50
 args.manualSeed = None
 args.manualSeedw = None
@@ -44,18 +45,22 @@ args.take = 1000
 args.batch_dim = 1000
 args.crop_size = [40, 40, 3]
 args.spacing = 10
+args.wind_size = 11 ## must be an odd number
+args.wind_time_max = 6
 
 args.path = os.path.join(args.tensorboard, 'SaS_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
 
-imgs_raw = np.load(r'J:\SaS\imgs_raw_coded_png_bytes.npy')
-fn_time_crop_list = np.load(r'J:\SaS\fn_time_crop.npy')
+imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
+fn_time_crop_list = np.load(r'D:\pycharm_projects\SaS\fn_time_crop.npy')
 crops = np.array([ii[2] for ii in fn_time_crop_list])
 times = np.array([float(ii[1]) for ii in fn_time_crop_list])
+folders = np.array([ii[0].split(os.sep)[0] for ii in fn_time_crop_list])
 fn_time_crop_list = []
 args.CLASS_NAMES, args.class_counts = np.unique(crops, return_counts=True)
 # args.class_weights = np.max(args.class_counts)/args.class_counts
 # args.class_weights = args.class_weights/np.sum(args.class_weights)
+
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -130,6 +135,46 @@ def pre_process(img_crop):
     return tf.stack((img1, img2), axis=0), img_crop[1] == args.CLASS_NAMES
 
 
+# class ArtificialDataset(tf.data.Dataset):
+#     def _generator(indices):
+#         for sample_idx in np.random.permutation(len(indices)):
+#             yield imgs_raw[indices[sample_idx]], crops[indices[sample_idx]]
+#
+#     def __new__(cls, indices):
+#         return tf.data.Dataset.from_generator(
+#             cls._generator,
+#             output_types=imgs_raw[0].dtype,
+#             output_shapes=None,
+#             args=(indices, )
+#             )
+
+nearby_indices = np.lexsort((times,crops))
+imgs_raw = imgs_raw[nearby_indices]
+crops = crops[nearby_indices]
+times = times[nearby_indices]
+#### max/min indices for random time window sampler ########
+temp = np.array([w for w in mit.windowed(times, args.wind_size)])
+temp = temp - temp[:,args.wind_size//2].reshape(-1,1)
+temp = np.transpose((np.abs(temp) < args.wind_time_max).nonzero())
+_, idx = np.unique(temp[:,0], return_index=True)
+minind = np.minimum.reduceat(temp[:,1], idx) - args.wind_size//2
+maxind = -np.maximum.reduceat(temp[:,1], idx) + args.wind_size//2
+
+############################################################
+class ArtificialDataset(tf.data.Dataset):
+    def _generator(indices):
+        for sample_idx in (np.random.permutation(len(minind)) + args.wind_size//2):
+            contr_ind = np.random.choice(np.concatenate((np.arange(minind[sample_idx],0), -np.arange(maxind[sample_idx], 0)))) ## draw nonzero index sample
+            yield imgs_raw[sample_idx], imgs_raw[sample_idx + contr_ind]
+
+    def __new__(cls, indices):
+        return tf.data.Dataset.from_generator(
+            cls._generator,
+            output_types=imgs_raw[0].dtype,
+            output_shapes=None,
+            args=(indices, )
+            )
+
 ################# create Model ################
 # img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
 actfun = 'swish'
@@ -147,59 +192,31 @@ with tf.device(args.device):
     model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
 
 ############################################# data loader #######################################
-# dataset_train_list = []
-# dataset_valid_list = []
-# dataset_test_list = []
-#
-# for cls in args.CLASS_NAMES:
-#     data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
-#     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
-#     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
-#     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
-#
-#     dataset_train = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][train_ind], crops[crops==cls][train_ind])))  # .float().to(args.device)
-#     dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-#         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
-#
-#     dataset_valid = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][val_ind], crops[crops==cls][val_ind])))  # .float().to(args.device)
-#     dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-#         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
-#
-#     dataset_test = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][test_ind], crops[crops==cls][test_ind])))  # .float().to(args.device)
-#     dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-#         batch_size=args.batch_dim).take(args.take).prefetch(tf.data.experimental.AUTOTUNE)
-#
-#     dataset_train_list.append(dataset_train)
-#     dataset_valid_list.append(dataset_valid)
-#     dataset_test_list.append(dataset_test)
-#
-# #################################################################
-#
-# train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
-# val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
-# test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
+dataset_train_list = []
+dataset_valid_list = []
+dataset_test_list = []
 
-########################### contrastive learning no bias correction ####################
-data_split_ind = np.random.permutation(imgs_raw.shape[0])
-train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
-val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
-test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
+for cls in args.CLASS_NAMES:
+    data_split_ind = np.random.permutation(np.argwhere(crops==cls)).squeeze()
+    train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
+    val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
+    test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
 
-dataset_train = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[train_ind], crops[train_ind])))  # .float().to(args.device)
-dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-    batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_train = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_valid = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_test = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
 
-dataset_valid = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[val_ind], crops[val_ind])))  # .float().to(args.device)
-dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-    batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_train_list.append(dataset_train)
+    dataset_valid_list.append(dataset_valid)
+    dataset_test_list.append(dataset_test)
 
-dataset_test = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[test_ind], crops[test_ind])))  # .float().to(args.device)
-dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(
-    batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+#################################################################
 
-train_ds = dataset_train
-val_ds = dataset_valid
-test_ds = dataset_test
+train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
+val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
+test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
+
+
 #################################################################
 
 data = next(iter(test_ds))
@@ -232,7 +249,7 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
             x = tf.reshape((element[0]), (-1,*args.crop_size))
             ################### self-supervised update ############################
             with tf.GradientTape() as tape:
-                loss = nt_xent(model_simclr(x, training=True)) + tf.reduce_mean(model_simclr.losses)
+                loss = nt_xent(model_simclr(x, training=True)) #+ tf.reduce_mean(model_simclr.losses)
             grads = tape.gradient(loss, model_simclr.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer_simclr.apply_gradients(zip(grads, model_simclr.trainable_variables))

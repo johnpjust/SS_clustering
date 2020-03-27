@@ -129,6 +129,18 @@ def pre_process(img_crop):
 
     return img1, img2, img_crop[1] == args.CLASS_NAMES
 
+class ArtificialDataset(tf.data.Dataset):
+    def _generator(indices):
+        for sample_idx in np.random.permutation(len(indices)):
+            yield imgs_raw[indices[sample_idx]], crops[indices[sample_idx]]
+
+    def __new__(cls, indices):
+        return tf.data.Dataset.from_generator(
+            cls._generator,
+            output_types=imgs_raw[0].dtype,
+            output_shapes=None,
+            args=(indices, )
+            )
 
 ################# create Model ################
 # img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
@@ -152,22 +164,14 @@ dataset_valid_list = []
 dataset_test_list = []
 
 for cls in args.CLASS_NAMES:
-    data_split_ind = np.random.permutation(imgs_raw[crops==cls].shape[0])
+    data_split_ind = np.random.permutation(np.argwhere(crops==cls)).squeeze()
     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
 
-    dataset_train = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][train_ind], crops[crops==cls][train_ind])))  # .float().to(args.device)
-    dataset_train = dataset_train.shuffle(buffer_size=len(train_ind)).map(pre_process_aug, num_parallel_calls=4).batch(
-        batch_size=args.batch_dim).take(args.take).prefetch(4)
-
-    dataset_valid = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][val_ind], crops[crops==cls][val_ind])))  # .float().to(args.device)
-    dataset_valid = dataset_valid.shuffle(buffer_size=len(val_ind)).map(pre_process, num_parallel_calls=4).batch(
-        batch_size=args.batch_dim).take(args.take).prefetch(4)
-
-    dataset_test = tf.data.Dataset.from_tensor_slices(np.vstack(zip(imgs_raw[crops==cls][test_ind], crops[crops==cls][test_ind])))  # .float().to(args.device)
-    dataset_test = dataset_test.shuffle(buffer_size=len(test_ind)).map(pre_process, num_parallel_calls=4).batch(
-        batch_size=args.batch_dim).take(args.take).prefetch(4)
+    dataset_train = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_valid = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_test = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
 
     dataset_train_list.append(dataset_train)
     dataset_valid_list.append(dataset_valid)
