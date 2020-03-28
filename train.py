@@ -14,6 +14,8 @@ from pathlib import Path
 import ntpath
 import resnet_models
 import more_itertools as mit
+import efficientnet.tfkeras as efn
+
 
 from tensorflow.keras import backend as K
 def swish_activation(x):
@@ -41,12 +43,13 @@ args.prefetch_size = 10  # data pipeline prefetch buffer size
 args.parallel = 8  # data pipeline parallel processes
 args.preserve_aspect_ratio = True;  ##when resizing
 args.p_val = 0.2
-args.take = 1000
-args.batch_dim = 1000
-args.crop_size = [40, 40, 3]
+args.take = 256
+args.batch_dim = 64
+# args.crop_size = [40, 40, 3]
 args.spacing = 10
 args.wind_size = 11 ## must be an odd number
 args.wind_time_max = 6
+args.wind_size_half = args.wind_size//2
 
 args.path = os.path.join(args.tensorboard, 'SaS_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
@@ -83,34 +86,63 @@ def zoom(x):
     y = tf.image.random_crop(x, size=bbox)
     return tf.image.resize(y, size=args.crop_size[:2])
 
-args.aug_prob = [0.85]*6
-augmentations = [tf.image.random_flip_left_right,
+args.aug_prob = [0]
+args.aug_prob.extend([0.85]*5)
+augmentations = [lambda x: tf.image.random_brightness(x, 0.2),
+                 tf.image.random_flip_left_right,
                  tf.image.random_flip_up_down,
                  lambda x: tf.image.random_hue(x, 0.1),
                  lambda x: tf.image.random_saturation(x, 0.5, 1.5),
-                 lambda x: tf.image.random_brightness(x, 0.2),
                  lambda x: tf.image.random_contrast(x, 0.7, 1.3)]
+
+# @tf.function
+# def pre_process_aug(img_crop):
+#     # convert the compressed string to a 3D uint8 tensor
+#     img = tf.image.decode_png(img_crop[0], channels=3)
+#     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+#     img = tf.image.convert_image_dtype(img, tf.float32)
+#     '''
+#         note for self-supervised method will need a function to product several random crops (random zoom/size) and resize back to orig
+#         consider using two loss functions (alternating) between regular multi-class cross entropy and the NT-Xent loss which allows
+#         more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
+#         cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
+#     '''
+#     # img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+#     img1 = zoom(img)
+#     for f, prob in zip(augmentations, args.aug_prob):
+#         img1 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img1), lambda: img1)
+#     img1 = tf.clip_by_value(img1, 0, 1)
+#
+#     # img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+#     img2 = zoom(img)
+#     for f, prob in zip(augmentations, args.aug_prob):
+#         img2 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img2), lambda: img2)
+#
+#     img2 = tf.clip_by_value(img2, 0, 1)
+#
+#     # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
+#
+#     return tf.stack((img1, img2), axis=0), img_crop[1] == args.CLASS_NAMES
 
 @tf.function
 def pre_process_aug(img_crop):
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_png(img_crop[0], channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    img = tf.image.convert_image_dtype(img, tf.float32)
+    img1 = tf.image.convert_image_dtype(img, tf.float32)
+    img = tf.image.decode_png(img_crop[1], channels=3)
+    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+    img2 = tf.image.convert_image_dtype(img, tf.float32)
     '''
         note for self-supervised method will need a function to product several random crops (random zoom/size) and resize back to orig
         consider using two loss functions (alternating) between regular multi-class cross entropy and the NT-Xent loss which allows
         more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
         cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
     '''
-    # img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
-    img1 = zoom(img)
     for f, prob in zip(augmentations, args.aug_prob):
         img1 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img1), lambda: img1)
     img1 = tf.clip_by_value(img1, 0, 1)
 
-    # img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
-    img2 = zoom(img)
     for f, prob in zip(augmentations, args.aug_prob):
         img2 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img2), lambda: img2)
 
@@ -118,21 +150,7 @@ def pre_process_aug(img_crop):
 
     # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
 
-    return tf.stack((img1, img2), axis=0), img_crop[1] == args.CLASS_NAMES
-
-@tf.function
-def pre_process(img_crop):
-    # convert the compressed string to a 3D uint8 tensor
-    img = tf.image.decode_png(img_crop[0], channels=3)
-    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    img = tf.image.convert_image_dtype(img, tf.float32)
-
-    img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
-    img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
-
-    # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
-
-    return tf.stack((img1, img2), axis=0), img_crop[1] == args.CLASS_NAMES
+    return tf.stack((img1, img2), axis=0)
 
 
 # class ArtificialDataset(tf.data.Dataset):
@@ -157,15 +175,15 @@ temp = np.array([w for w in mit.windowed(times, args.wind_size)])
 temp = temp - temp[:,args.wind_size//2].reshape(-1,1)
 temp = np.transpose((np.abs(temp) < args.wind_time_max).nonzero())
 _, idx = np.unique(temp[:,0], return_index=True)
-minind = np.minimum.reduceat(temp[:,1], idx) - args.wind_size//2
-maxind = -np.maximum.reduceat(temp[:,1], idx) + args.wind_size//2
-
+minind = np.minimum.reduceat(temp[:,1], idx) - args.wind_size_half
+maxind = -np.maximum.reduceat(temp[:,1], idx) + args.wind_size_half
+contr_inds = [np.concatenate((np.arange(minind[sample_idx],0), -np.arange(maxind[sample_idx], 0))) for sample_idx in range(len(minind))]
 ############################################################
 class ArtificialDataset(tf.data.Dataset):
     def _generator(indices):
-        for sample_idx in (np.random.permutation(len(minind)) + args.wind_size//2):
-            contr_ind = np.random.choice(np.concatenate((np.arange(minind[sample_idx],0), -np.arange(maxind[sample_idx], 0)))) ## draw nonzero index sample
-            yield imgs_raw[sample_idx], imgs_raw[sample_idx + contr_ind]
+        for sample_idx in np.random.permutation(len(indices)):
+            contr_ind = np.random.choice(contr_inds[indices[sample_idx]]) ## draw nonzero index sample
+            yield imgs_raw[indices[sample_idx] + args.wind_size_half], imgs_raw[indices[sample_idx] + args.wind_size_half + contr_ind]
 
     def __new__(cls, indices):
         return tf.data.Dataset.from_generator(
@@ -175,53 +193,57 @@ class ArtificialDataset(tf.data.Dataset):
             args=(indices, )
             )
 
+############################################# data loader no separation of classes #######################################
+data_split_ind = np.random.permutation(len(minind)).squeeze()
+train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
+val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
+test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
+
+train_ds = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+val_ds = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+test_ds = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+
+# ############################################# data loader with separate crop classes #######################################
+# dataset_train_list = []
+# dataset_valid_list = []
+# dataset_test_list = []
+# for crop in args.CLASS_NAMES:
+#     data_split_ind = np.random.permutation(np.argwhere(crops==crop)).squeeze()
+#     train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
+#     val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
+#     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
+#
+#     dataset_train = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+#     dataset_valid = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+#     dataset_test = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+#
+#     dataset_train_list.append(dataset_train)
+#     dataset_valid_list.append(dataset_valid)
+#     dataset_test_list.append(dataset_test)
+# #################################################################
+# train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
+# val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
+# test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
+# #################################################################
+
+data = next(test_ds.as_numpy_iterator())
+# data = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in data], axis=0)
+data = np.concatenate(data, axis=0)
 ################# create Model ################
 # img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
 actfun = 'swish'
 with tf.device(args.device):
     # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
-    model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
-    feats = layers.Dense(16, activation=None)(model_.output)
-    ## classification
-    # x = layers.Dense(32, activation=actfun)(feats)
-    # output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
-    # model = tf.keras.Model(model_.input, output, name='class_model')
+    # model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
+    model_ = efn.EfficientNetB0(weights=None, include_top=False, pooling='max', input_shape=data[0].shape)  # or weights='noisy-student'
+    feats = layers.Dense(128, activation=actfun)(model_.output)
     ## simclr
-    x = layers.Dense(8, activation=actfun)(feats)
-    output = layers.Dense(8)(x)
+    output = layers.Dense(32)(feats)
     model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
 
-############################################# data loader #######################################
-dataset_train_list = []
-dataset_valid_list = []
-dataset_test_list = []
-
-for cls in args.CLASS_NAMES:
-    data_split_ind = np.random.permutation(np.argwhere(crops==cls)).squeeze()
-    train_ind = data_split_ind[:int((1-2*args.p_val)*len(data_split_ind))]
-    val_ind = data_split_ind[int((1 - 2 * args.p_val) * len(data_split_ind)):int((1 - args.p_val) * len(data_split_ind))]
-    test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
-
-    dataset_train = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_valid = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_test = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
-
-    dataset_train_list.append(dataset_train)
-    dataset_valid_list.append(dataset_valid)
-    dataset_test_list.append(dataset_test)
-
-#################################################################
-
-train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
-val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
-test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
-
-
-#################################################################
-
-data = next(iter(test_ds))
-# data = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in data], axis=0)
-data = tf.reshape((data[0]), (-1,*args.crop_size))
+bn_layer_inds = [ind for ind, x in enumerate(model_simclr.layers) if 'bn' in x.name]
+for ind in bn_layer_inds:
+    model_simclr.layers[ind].momentum = np.float32(0)
 
 def pair_cosine_similarity(x):
     normalized = tf.nn.l2_normalize(x, axis=1)
@@ -242,11 +264,11 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
-        for element in train_ds:
+        for element in train_ds.take(args.take):
             ############### arange data ####################
             # x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
             # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            x = tf.reshape((element[0]), (-1,*args.crop_size))
+            x = tf.reshape(element, (-1, *data.shape[-3:]))
             ################### self-supervised update ############################
             with tf.GradientTape() as tape:
                 loss = nt_xent(model_simclr(x, training=True)) #+ tf.reduce_mean(model_simclr.losses)
@@ -272,19 +294,39 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         #     model(x, training=True) ## aggregate BN values with weights frozen
         # model(x, training=None) ## update MA values
 
-        model_simclr(x, training=False) ## clear MA values
-        for element in train_ds:
+        ## batch norm population averaging
+        ma_var_list = []
+        ma_mean_list = []
+        for ind0, element in train_ds.take(args.take).enumerate(start=1):
             # x = tf.concat([el[0] for el in element], axis=0)
-            x = tf.reshape((element[0]), (-1,*args.crop_size))
-            model_simclr(x, training=True) ## aggregate BN values with weights frozen
-        model_simclr(x, training=None) ## update MA values
+            x = tf.reshape(element, (-1, *data.shape[-3:]))
+            model_simclr(x, training=True)
+            if ind0 == 1:
+                for ind in bn_layer_inds:
+                    ma_mean_list.append(model_simclr.layers[ind].moving_mean.numpy())
+                    ma_var_list.append(model_simclr.layers[ind].moving_variance.numpy())
+            else:
+                for ind1, ind in enumerate(bn_layer_inds):
+                    ma_mean_list[ind1] += model_simclr.layers[ind].moving_mean.numpy()
+                    ma_var_list[ind1] += model_simclr.layers[ind].moving_variance.numpy()
+
+        for ind1, ind in enumerate(bn_layer_inds):
+            model_simclr.layers[ind].moving_mean.assign(ma_mean_list[ind1]/np.float32(ind0))
+            model_simclr.layers[ind].moving_variance.assign(ma_var_list[ind1]/np.float32(ind0))
+
+        # model_simclr(x, training=False) ## clear MA values
+        # for element in train_ds:
+        #     # x = tf.concat([el[0] for el in element], axis=0)
+        #     x = tf.reshape(element, (-1, *data.shape[-3:]))
+        #     model_simclr(x, training=True) ## aggregate BN values with weights frozen
+        # model_simclr(x, training=None) ## update MA values
 
         validation_loss = []
         validation_loss_simclr = []
-        for element in val_ds:
+        for element in val_ds.take(args.take):
             # x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
             # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            x = tf.reshape((element[0]), (-1, *args.crop_size))
+            x = tf.reshape(element, (-1, *data.shape[-3:]))
             ################### self-supervised update ############################
             loss = nt_xent(model_simclr(x, training=False)).numpy()
             validation_loss_simclr.append(loss)
@@ -296,22 +338,22 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         # validation_loss = tf.reduce_mean(validation_loss)
         # tf.summary.scalar('loss/validation', validation_loss, globalstep)
 
-        test_loss=[]
-        test_loss_simclr = []
-        for element in test_ds:
-            # x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
-            # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            x = tf.reshape((element[0]), (-1,*args.crop_size))
-            ################### self-supervised update #############################
-            loss = nt_xent(model_simclr(x, training=False)).numpy()
-            test_loss_simclr.append(loss)
-            ################## supervised classification update ####################
-            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
-            # test_loss.append(loss)
-        test_loss_simclr = tf.reduce_mean(test_loss_simclr)
-        tf.summary.scalar('loss/test_simclr', test_loss_simclr, globalstep)
-        # test_loss = tf.reduce_mean(test_loss)
-        # tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()
+        # test_loss=[]
+        # test_loss_simclr = []
+        # for element in test_ds:
+        #     # x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
+        #     # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
+        #     x = tf.reshape((element[0]), (-1,*args.crop_size))
+        #     ################### self-supervised update #############################
+        #     loss = nt_xent(model_simclr(x, training=True)).numpy()
+        #     test_loss_simclr.append(loss)
+        #     ################## supervised classification update ####################
+        #     # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+        #     # test_loss.append(loss)
+        # test_loss_simclr = tf.reduce_mean(test_loss_simclr)
+        # tf.summary.scalar('loss/test_simclr', test_loss_simclr, globalstep)
+        # # test_loss = tf.reduce_mean(test_loss)
+        # # tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()
 
         stop = scheduler.on_epoch_end(epoch=epoch, monitor=validation_loss_simclr)
 
