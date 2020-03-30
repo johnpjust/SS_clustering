@@ -338,19 +338,19 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, train_ds,
         # validation_loss = tf.reduce_mean(validation_loss)
         # tf.summary.scalar('loss/validation', validation_loss, globalstep)
 
-        # test_loss=[]
-        # test_loss_simclr = []
-        # for element in test_ds:
-        #     # x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
-        #     # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-        #     x = tf.reshape((element[0]), (-1,*args.crop_size))
-        #     ################### self-supervised update #############################
-        #     loss = nt_xent(model_simclr(x, training=True)).numpy()
-        #     test_loss_simclr.append(loss)
-        #     ################## supervised classification update ####################
-        #     # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
-        #     # test_loss.append(loss)
-        # test_loss_simclr = tf.reduce_mean(test_loss_simclr)
+        test_loss=[]
+        test_loss_simclr = []
+        for element in test_ds:
+            # x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
+            # y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
+            x = tf.reshape(element, (-1, *data.shape[-3:]))
+            ################### self-supervised update #############################
+            loss = nt_xent(model_simclr(x, training=False)).numpy()
+            test_loss_simclr.append(loss)
+            ################## supervised classification update ####################
+            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+            # test_loss.append(loss)
+        test_loss_simclr = tf.reduce_mean(test_loss_simclr)
         # tf.summary.scalar('loss/test_simclr', test_loss_simclr, globalstep)
         # # test_loss = tf.reduce_mean(test_loss)
         # # tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()

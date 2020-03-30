@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 import ntpath
 import resnet_models
+import efficientnet.tfkeras as efn
 
 from tensorflow.keras import backend as K
 def swish_activation(x):
@@ -74,19 +75,19 @@ if gpus:
 @tf.function
 def zoom(x):
     # bbox = tf.stack([*args.crop_size[:2]*tf.random.uniform(shape=[], minval=0.8, maxval=1), 3])
-    rval = tf.random.uniform(shape=[], minval=0.8, maxval=1)
+    rval = tf.random.uniform(shape=[], minval=0.8, maxval=1.2)
     bbox = [args.crop_size[0]*rval, args.crop_size[1]*rval, 3]
     x = tf.image.random_crop(x, size=bbox)
     return tf.image.resize(x, size=args.crop_size[:2])
 
-args.aug_prob = [0.85]*7
-augmentations = [tf.image.random_flip_left_right,
+args.aug_prob = [0]
+args.aug_prob.extend([0.85]*5)
+augmentations = [lambda x: tf.image.random_brightness(x, 0.2),
+                tf.image.random_flip_left_right,
                  tf.image.random_flip_up_down,
                  lambda x: tf.image.random_hue(x, 0.5),
                  lambda x: tf.image.random_saturation(x, 0.1, 10),
-                 lambda x: tf.image.random_brightness(x, 0.2),
-                 lambda x: tf.image.random_contrast(x, 0.7, 1.3),
-                 zoom]
+                 lambda x: tf.image.random_contrast(x, 0.7, 1.3)]
 
 @tf.function
 def pre_process_aug(img_crop):
@@ -100,12 +101,14 @@ def pre_process_aug(img_crop):
         more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
         cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
     '''
-    img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+    img1 = zoom(img)
+    # img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
     for f, prob in zip(augmentations, args.aug_prob):
         img1 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img1), lambda: img1)
     img1 = tf.clip_by_value(img1, 0, 1)
 
-    img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
+    img2 = zoom(img)
+    # img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
     for f, prob in zip(augmentations, args.aug_prob):
         img2 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img2), lambda: img2)
 
@@ -143,20 +146,21 @@ class ArtificialDataset(tf.data.Dataset):
             )
 
 ################# create Model ################
-# img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
-actfun = 'swish'
-with tf.device(args.device):
-    # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
-    model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
-    feats = layers.Dense(128, activation=None, activity_regularizer=tf.keras.regularizers.l1(0.001),kernel_regularizer=tf.keras.regularizers.l1(0.00001))(model_.output)
-    ## classification
-    x = layers.Dense(32, activation=actfun)(feats)
-    output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
-    model = tf.keras.Model(model_.input, output, name='class_model')
-    ## simclr
-    x = layers.Dense(32, activation=actfun)(feats)
-    output = layers.Dense(32)(x)
-    model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
+# # img = tf.stack([tf.image.convert_image_dtype(tf.image.decode_png(x), dtype=tf.float32) for x in imgs_raw[:10]]) # debug
+# actfun = 'swish'
+# with tf.device(args.device):
+#     # model_ = resnet_models.ResNet50V2(include_top=False, weights=None, actfun = 'relu', pooling='avg')
+#     model_ = resnet_models.ResNet50V2(input_shape=args.crop_size, include_top=False, weights=None, actfun=actfun, pooling='avg')
+#     feats = layers.Dense(128, activation=None, activity_regularizer=tf.keras.regularizers.l1(0.001),kernel_regularizer=tf.keras.regularizers.l1(0.00001))(model_.output)
+#     ## classification
+#     x = layers.Dense(32, activation=actfun)(feats)
+#     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
+#     model = tf.keras.Model(model_.input, output, name='class_model')
+#     ## simclr
+#     x = layers.Dense(32, activation=actfun)(feats)
+#     output = layers.Dense(32)(x)
+#     model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
+
 
 ############################################# data loader #######################################
 dataset_train_list = []
@@ -183,12 +187,35 @@ train_ds = tf.data.Dataset.zip(tuple(dataset_train_list))
 val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
 test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
-data = next(iter(test_ds))
+data = next(test_ds.as_numpy_iterator())
 data = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in data], axis=0)
+
+actfun = 'swish'
+with tf.device(args.device):
+    model_ = efn.EfficientNetB0(weights=None, include_top=False, pooling='max', input_shape=data[0].shape)  # or weights='noisy-student'
+    feats = layers.Dense(128, activation=actfun, activity_regularizer=tf.keras.regularizers.l1(0.001),kernel_regularizer=tf.keras.regularizers.l1(0.00001))(model_.output)
+    ## simclr
+    output = layers.Dense(32)(feats)
+    model_simclr = tf.keras.Model(model_.input, output, name='simclr_model')
+
+    output = layers.Dense(args.CLASS_NAMES.shape[0])(output)
+    model = tf.keras.Model(model_.input, output, name='class_model')
+
+bn_layer_inds = [ind for ind, x in enumerate(model_simclr.layers) if 'bn' in x.name]
+for ind in bn_layer_inds:
+    model_simclr.layers[ind].momentum = np.float32(0)
 
 def pair_cosine_similarity(x):
     normalized = tf.nn.l2_normalize(x, axis=1)
     return tf.matmul(normalized, normalized, adjoint_b=True)
+
+def squared_distance(x):
+    x = tf.nn.l2_normalize(x, axis=1)
+    r = tf.reduce_sum(x * x, 1)
+    # turn r into column vector
+    r = tf.reshape(r, [-1, 1])
+    D = r - 2 * tf.matmul(x, tf.transpose(x)) + tf.transpose(r)
+    return tf.maximum(D, 0.0)
 
 idx = np.arange(data.shape[0])
 idx[::2] += 1
@@ -201,7 +228,14 @@ def nt_xent(x, t=0.5):
     x = tf.linalg.diag_part(x) / (tf.reduce_sum(x, axis=0) - tf.exp(1 / t))
     return -tf.math.log(tf.reduce_mean(x))
 
-def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, scheduler_simclr, train_ds, val_ds, test_ds, args):
+def nt_xent_euclid(x, t=0.5):
+    x = squared_distance(x)
+    x = tf.exp(x / t)
+    x = tf.gather(x, idx, axis=0)
+    x = tf.linalg.diag_part(x) / (tf.reduce_sum(x, axis=0) - tf.exp(1 / t))
+    return tf.math.log(tf.reduce_mean(x))
+
+def train(model, model_simclr, optimizer, optimizer_simclr, optimizer_simclr_euclid, scheduler, scheduler_simclr, train_ds, val_ds, test_ds, args):
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
@@ -209,13 +243,20 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, scheduler
             ############### arange data ####################
             x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            ################### self-supervised update ############################
+            ################### self-supervised update log-bilinear ############################
             with tf.GradientTape() as tape:
                 loss = nt_xent(model_simclr(x, training=True)) + tf.reduce_mean(model_simclr.losses)
             grads = tape.gradient(loss, model_simclr.trainable_variables)
             grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
             globalstep = optimizer_simclr.apply_gradients(zip(grads, model_simclr.trainable_variables))
             tf.summary.scalar('loss/train_simclr', loss, globalstep)
+            ################### self-supervised update euclidean distance ############################
+            with tf.GradientTape() as tape:
+                loss = nt_xent_euclid(model_simclr(x, training=True)) + 0.1*tf.reduce_mean(model_simclr.losses)
+            grads = tape.gradient(loss, model_simclr.trainable_variables)
+            grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
+            globalstep = optimizer_simclr_euclid.apply_gradients(zip(grads, model_simclr.trainable_variables))
+            tf.summary.scalar('loss/train_simclr_euclid', loss, globalstep)
             ############### supervised classification update ####################
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True))) + tf.reduce_mean(model.losses)
@@ -224,46 +265,69 @@ def train(model, model_simclr, optimizer, optimizer_simclr, scheduler, scheduler
             globalstep = optimizer.apply_gradients(zip(grads, model.trainable_variables))
             tf.summary.scalar('loss/train', loss, globalstep)
 
-        ## potentially update batch norm variables manually
-        ## variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='batch_normalization')
-        ## update batch norm "moving averages" prior to validation.  Follow "state" path
-        model(x, training=False) ## clear MA values
-        for element in train_ds:
-            x = tf.concat([el[0] for el in element], axis=0)
-            model(x, training=True) ## aggregate BN values with weights frozen
-        model(x, training=None) ## update MA values
+        ## batch norm population averaging
+        ma_var_list = []
+        ma_mean_list = []
+        for ind0, element in train_ds.enumerate(start=1):
+            # x = tf.concat([el[0] for el in element], axis=0)
+            x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
+            model_simclr(x, training=True)
+            if ind0 == 1:
+                for ind in bn_layer_inds:
+                    ma_mean_list.append(model_simclr.layers[ind].moving_mean.numpy())
+                    ma_var_list.append(model_simclr.layers[ind].moving_variance.numpy())
+            else:
+                for ind1, ind in enumerate(bn_layer_inds):
+                    ma_mean_list[ind1] += model_simclr.layers[ind].moving_mean.numpy()
+                    ma_var_list[ind1] += model_simclr.layers[ind].moving_variance.numpy()
+
+        for ind1, ind in enumerate(bn_layer_inds):
+            model_simclr.layers[ind].moving_mean.assign(ma_mean_list[ind1]/np.float32(ind0))
+            model_simclr.layers[ind].moving_variance.assign(ma_var_list[ind1]/np.float32(ind0))
 
         validation_loss = []
         validation_loss_simclr = []
+        alidation_loss_simclr_euclid = []
         for element in val_ds:
             x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
             ################### self-supervised update ############################
             loss = nt_xent(model_simclr(x, training=False)).numpy()
             validation_loss_simclr.append(loss)
+            ################### self-supervised update euclid ############################
+            loss = nt_xent_euclid(model_simclr(x, training=False)).numpy()
+            alidation_loss_simclr_euclid.append(loss)
             ############### supervised classification update ####################
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
             validation_loss.append(loss)
         validation_loss_simclr = tf.reduce_mean(validation_loss_simclr)
         tf.summary.scalar('loss/validation_simclr', validation_loss_simclr, globalstep)
+        alidation_loss_simclr_euclid = tf.reduce_mean(alidation_loss_simclr_euclid)
+        tf.summary.scalar('loss/validation_simclr_euclid', alidation_loss_simclr_euclid, globalstep)
         validation_loss = tf.reduce_mean(validation_loss)
         tf.summary.scalar('loss/validation', validation_loss, globalstep)
 
-        test_loss=[]
-        test_loss_simclr = []
-        for element in test_ds:
-            x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
-            y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            ################### self-supervised update #############################
-            loss = nt_xent(model_simclr(x, training=False)).numpy()
-            test_loss_simclr.append(loss)
-            ################## supervised classification update ####################
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
-            test_loss.append(loss)
-        test_loss_simclr = tf.reduce_mean(test_loss_simclr)
-        tf.summary.scalar('loss/test_simclr', test_loss_simclr, globalstep)
-        test_loss = tf.reduce_mean(test_loss)
-        tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()
+        # test_loss=[]
+        # test_loss_simclr = []
+        # test_loss_simclr_euclid = []
+        # for element in test_ds:
+        #     x = tf.concat([tf.concat((el[0], el[1]), axis=0) for el in element], axis=0)
+        #     y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
+        #     ################### self-supervised update #############################
+        #     loss = nt_xent(model_simclr(x, training=False)).numpy()
+        #     test_loss_simclr.append(loss)
+        #     ################### self-supervised euclid update #############################
+        #     loss = nt_xent_euclid(model_simclr(x, training=False)).numpy()
+        #     test_loss_simclr_euclid.append(loss)
+        #     ################## supervised classification update ####################
+        #     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=False))).numpy()
+        #     test_loss.append(loss)
+        # test_loss_simclr = tf.reduce_mean(test_loss_simclr)
+        # tf.summary.scalar('loss/test_simclr', test_loss_simclr, globalstep)
+        # test_loss_simclr_euclid = tf.reduce_mean(test_loss_simclr_euclid)
+        # tf.summary.scalar('loss/test_simclr_euclid', test_loss_simclr_euclid, globalstep)
+        # test_loss = tf.reduce_mean(test_loss)
+        # tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()
 
         stop = scheduler.on_epoch_end(epoch=epoch, monitor=validation_loss) or scheduler_simclr.on_epoch_end(epoch=epoch, monitor=validation_loss_simclr)
 
@@ -300,6 +364,10 @@ with tf.device(args.device):
     optimizer_simclr = tf.optimizers.Adam()
 root = tf.train.Checkpoint(optimizer=optimizer,
                            model=model)
+with tf.device(args.device):
+    optimizer_simclr_euclid = tf.optimizers.Adam()
+root = tf.train.Checkpoint(optimizer=optimizer,
+                           model=model)
 
 # if args.load:
 #     load_model(args, root)
@@ -308,13 +376,13 @@ print('Creating scheduler..')
 # use baseline to avoid saving early on
 scheduler = EarlyStopping(model=model, patience=args.early_stopping, args=args, root=root)
 
-scheduler_simclr = EarlyStopping(model=model_simclr , patience=args.early_stopping, args=args, root=None)
+scheduler_simclr = EarlyStopping(model=model_simclr, patience=args.early_stopping, args=args, root=None)
 
 # with tf.device(args.device):
 #     train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
 with tf.device(args.device):
-    train(model, model_simclr, optimizer, optimizer_simclr, scheduler, scheduler_simclr, train_ds, val_ds, test_ds, args)
+    train(model, model_simclr, optimizer, optimizer_simclr, optimizer_simclr_euclid, scheduler, scheduler_simclr, train_ds, val_ds, test_ds, args)
 
 ############################################ inference ###############################################################
 # model = tf.keras.models.load_model(r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard\SaS_2020-03-04-22-10-42\best_model')
