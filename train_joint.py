@@ -243,20 +243,20 @@ def train(model, model_simclr, optimizer, optimizer_simclr, optimizer_simclr_euc
             ############### arange data ####################
             x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
             y = tf.concat([tf.concat([el[2], el[2]],axis=0) for el in element], axis=0)
-            ################### self-supervised update log-bilinear ############################
-            with tf.GradientTape() as tape:
-                loss = nt_xent(model_simclr(x, training=True)) + tf.reduce_mean(model_simclr.losses)
-            grads = tape.gradient(loss, model_simclr.trainable_variables)
-            grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
-            globalstep = optimizer_simclr.apply_gradients(zip(grads, model_simclr.trainable_variables))
-            tf.summary.scalar('loss/train_simclr', loss, globalstep)
-            ################### self-supervised update euclidean distance ############################
-            with tf.GradientTape() as tape:
-                loss = nt_xent_euclid(model_simclr(x, training=True)) + 0.1*tf.reduce_mean(model_simclr.losses)
-            grads = tape.gradient(loss, model_simclr.trainable_variables)
-            grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
-            globalstep = optimizer_simclr_euclid.apply_gradients(zip(grads, model_simclr.trainable_variables))
-            tf.summary.scalar('loss/train_simclr_euclid', loss, globalstep)
+            # ################### self-supervised update log-bilinear ############################
+            # with tf.GradientTape() as tape:
+            #     loss = nt_xent(model_simclr(x, training=True)) + tf.reduce_mean(model_simclr.losses)
+            # grads = tape.gradient(loss, model_simclr.trainable_variables)
+            # grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
+            # globalstep = optimizer_simclr.apply_gradients(zip(grads, model_simclr.trainable_variables))
+            # tf.summary.scalar('loss/train_simclr', loss, globalstep)
+            # ################### self-supervised update euclidean distance ############################
+            # with tf.GradientTape() as tape:
+            #     loss = nt_xent_euclid(model_simclr(x, training=True)) + 0.1*tf.reduce_mean(model_simclr.losses)
+            # grads = tape.gradient(loss, model_simclr.trainable_variables)
+            # grads = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads]
+            # globalstep = optimizer_simclr_euclid.apply_gradients(zip(grads, model_simclr.trainable_variables))
+            # tf.summary.scalar('loss/train_simclr_euclid', loss, globalstep)
             ############### supervised classification update ####################
             with tf.GradientTape() as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model(x, training=True))) + tf.reduce_mean(model.losses)
