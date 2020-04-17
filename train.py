@@ -124,25 +124,57 @@ augmentations = [lambda x: tf.image.random_brightness(x, 0.2),
 #
 #     return tf.stack((img1, img2), axis=0), img_crop[1] == args.CLASS_NAMES
 
+
+######## for scenarios that include
+# @tf.function
+# def pre_process_aug(img_crop):
+#     # convert the compressed string to a 3D uint8 tensor
+#     img = tf.image.decode_png(img_crop[0], channels=3)
+#     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+#     img1 = tf.image.convert_image_dtype(img, tf.float32)
+#     img = tf.image.decode_png(img_crop[1], channels=3)
+#     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+#     img2 = tf.image.convert_image_dtype(img, tf.float32)
+#     '''
+#         note for self-supervised method will need a function to product several random crops (random zoom/size) and resize back to orig
+#         consider using two loss functions (alternating) between regular multi-class cross entropy and the NT-Xent loss which allows
+#         more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
+#         cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
+#     '''
+#     for f, prob in zip(augmentations, args.aug_prob):
+#         img1 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img1), lambda: img1)
+#     img1 = tf.clip_by_value(img1, 0, 1)
+#
+#     for f, prob in zip(augmentations, args.aug_prob):
+#         img2 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img2), lambda: img2)
+#
+#     img2 = tf.clip_by_value(img2, 0, 1)
+#
+#     # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
+#
+#     return tf.stack((img1, img2), axis=0)
+
+
 @tf.function
 def pre_process_aug(img_crop):
     # convert the compressed string to a 3D uint8 tensor
     img = tf.image.decode_png(img_crop[0], channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    img1 = tf.image.convert_image_dtype(img, tf.float32)
-    img = tf.image.decode_png(img_crop[1], channels=3)
-    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    img2 = tf.image.convert_image_dtype(img, tf.float32)
+    img = tf.image.convert_image_dtype(img, tf.float32)
     '''
         note for self-supervised method will need a function to product several random crops (random zoom/size) and resize back to orig
         consider using two loss functions (alternating) between regular multi-class cross entropy and the NT-Xent loss which allows
         more fine-level (even within-class) feature extraction.  Can use the multi-view [simultaneous] data from the multiple
         cameras as well (or more generally, images close in time), while also sampling from each class in a balanced way.
     '''
+    img1 = zoom(img)
+    # img1 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
     for f, prob in zip(augmentations, args.aug_prob):
         img1 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img1), lambda: img1)
     img1 = tf.clip_by_value(img1, 0, 1)
 
+    img2 = zoom(img)
+    # img2 = tf.image.random_crop(img, size=args.crop_size) ## size = [crop_height, crop_width, 3]
     for f, prob in zip(augmentations, args.aug_prob):
         img2 = tf.cond(tf.random.uniform([], 0, 1) > prob, lambda: f(img2), lambda: img2)
 
@@ -150,8 +182,7 @@ def pre_process_aug(img_crop):
 
     # stdrgb = np.array([27.52713196, 28.30034033, 29.1236649])
 
-    return tf.stack((img1, img2), axis=0)
-
+    return img1, img2, img_crop[1] == args.CLASS_NAMES
 
 # class ArtificialDataset(tf.data.Dataset):
 #     def _generator(indices):

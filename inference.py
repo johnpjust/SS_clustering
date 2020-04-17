@@ -31,13 +31,12 @@ class parser_:
     pass
 
 args = parser_()
-args.device = '/cpu:0'  # '/gpu:0'
+args.device = '/gpu:0'  # '/gpu:0'
 args.clip_norm = 0.1
 args.epochs = 5000
 args.patience = 10
 args.load = r''
 args.save = True
-args.tensorboard = r'C:\Users\justjo\PycharmProjects\SaS_clustering\tensorboard'
 args.early_stopping = 50
 args.manualSeed = None
 args.manualSeedw = None
@@ -50,9 +49,8 @@ args.take = 1000
 args.batch_dim = 100
 args.crop_size = [40, 40, 3]
 args.spacing = 10
-args.path = os.path.join(args.tensorboard, 'SaS_{}'.format(str(datetime.datetime.now())[:-7].replace(' ', '-').replace(':', '-')))
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
@@ -68,11 +66,11 @@ if gpus:
         print(e)
 
 
-model = tf.keras.models.load_model(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-03-28-16-07-01\best_model')
+model = tf.keras.models.load_model(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-04-05-23-59-15_3Loss\best_model_simclr')
 # embeds = tf.keras.Model(model.input, model.layers[-3].output, name='embeds') ## might just directly use model(input).layers[-3].output  ???
-def pre_process_inference(img_crop):
+def pre_process_inference(img_coded):
     # convert the compressed string to a 3D uint8 tensor
-    img = tf.image.decode_png(img_crop, channels=3)
+    img = tf.image.decode_png(img_coded, channels=3)
     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
     img = tf.image.convert_image_dtype(img, tf.float32)
 
@@ -88,46 +86,46 @@ def pre_process_inference(img_crop):
 
     return heatmap
 
-def pre_process_inference_fullimg(img_crop):
-    # convert the compressed string to a 3D uint8 tensor
-    img = tf.image.decode_png(img_crop, channels=3)
-    # Use `convert_image_dtype` to convert to floats in the [0,1] range.
-    return tf.image.convert_image_dtype(img, tf.float32)
-
-imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
-class ArtificialDataset(tf.data.Dataset):
-    def _generator(ind_len):
-        for sample_idx in range(ind_len):
-            yield imgs_raw[sample_idx]
-
-    def __new__(cls, ind_len):
-        return tf.data.Dataset.from_generator(
-            cls._generator,
-            output_types=imgs_raw[0].dtype,
-            output_shapes=None,
-            args=(ind_len, )
-            )
-
-ds = ArtificialDataset(len(imgs_raw)).map(pre_process_inference_fullimg, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=128).prefetch(tf.data.experimental.AUTOTUNE)
-
-embed_simclr = []
-for element in ds:
-    embed_simclr.append(model(element, training=False).numpy())
-
-def rescaler(img):
-    img = tf.image.decode_png(img, channels=3)
-    img = tf.image.convert_image_dtype(img, tf.float32)
-    return transform.rescale(img, 0.3, multichannel=True).reshape(-1)
+# def pre_process_inference_fullimg(img_crop):
+#     # convert the compressed string to a 3D uint8 tensor
+#     img = tf.image.decode_png(img_crop, channels=3)
+#     # Use `convert_image_dtype` to convert to floats in the [0,1] range.
+#     return tf.image.convert_image_dtype(img, tf.float32)
+#
+# imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
+# class ArtificialDataset(tf.data.Dataset):
+#     def _generator(ind_len):
+#         for sample_idx in range(ind_len):
+#             yield imgs_raw[sample_idx]
+#
+#     def __new__(cls, ind_len):
+#         return tf.data.Dataset.from_generator(
+#             cls._generator,
+#             output_types=imgs_raw[0].dtype,
+#             output_shapes=None,
+#             args=(ind_len, )
+#             )
+#
+# ds = ArtificialDataset(len(imgs_raw)).map(pre_process_inference_fullimg, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=128).prefetch(tf.data.experimental.AUTOTUNE)
+#
+# embed_simclr = []
+# for element in ds:
+#     embed_simclr.append(model(element, training=False).numpy())
+#
+# def rescaler(img):
+#     img = tf.image.decode_png(img, channels=3)
+#     img = tf.image.convert_image_dtype(img, tf.float32)
+#     return transform.rescale(img, 0.3, multichannel=True).reshape(-1)
 
 if __name__ == "__main__":
 
     ## deep learning inference
     imgs_raw = np.load(r'D:\pycharm_projects\SaS\imgs_raw_coded_png_bytes.npy')
     # r = list(tqdm.tqdm(map(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
-    with Pool(8) as p:
-        r = list(tqdm.tqdm(p.imap(pre_process_inference_fullimg, imgs_raw), total=imgs_raw.shape[0]))
+    with Pool(4) as p:
+        r = list(tqdm.tqdm(p.imap(pre_process_inference, imgs_raw), total=imgs_raw.shape[0]))
 
-    np.save(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-03-28-16-07-01\embeds_32', r)
+    np.save(r'D:\pycharm_projects\SaS\tensorboard\SaS_2020-04-05-23-59-15_3Loss\embeds_32', r)
 
     # ## PCA
     # with Pool(8) as p:
