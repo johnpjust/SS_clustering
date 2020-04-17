@@ -149,8 +149,8 @@ for cls in args.CLASS_NAMES:
     test_ind = data_split_ind[int((1 - args.p_val) * len(data_split_ind)):]
 
     dataset_train = ArtificialDataset(train_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_valid = ArtificialDataset(val_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
-    dataset_test = ArtificialDataset(test_ind).map(pre_process_aug, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_valid = ArtificialDataset(val_ind).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
+    dataset_test = ArtificialDataset(test_ind).map(pre_process, num_parallel_calls=tf.data.experimental.AUTOTUNE).batch(batch_size=args.batch_dim).prefetch(tf.data.experimental.AUTOTUNE)
 
     dataset_train_list.append(dataset_train)
     dataset_valid_list.append(dataset_valid)
@@ -238,7 +238,7 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
             ############## supervised classification updates ####################
             with tf.GradientTape(persistent=False) as tape:
                 loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=True))) + \
-                       tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_full, training=True)))
+                       tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=True)))
             grads = tape.gradient(loss, [model_weaksup_full.trainable_variables, model_weaksup_crop.trainable_variables])
             grads_full = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads[0]]
             globalstep = optimizer_weak_sup_full.apply_gradients(zip(grads_full, model_weaksup_full.trainable_variables))
@@ -254,10 +254,10 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
         ma_var_list_crop = []
         ma_mean_list_crop = []
         for ind0, element in train_ds.enumerate(start=1):
-            # x = tf.concat([el[0] for el in element], axis=0)
-            x = tf.concat([tf.concat((el[0], el[1]),axis=0) for el in element], axis=0)
-            model_full(x, training=True)
-            model_crop(x, training=True)
+            x_full = tf.concat([el[1] for el in element], axis=0)
+            x_crop = tf.concat([el[0] for el in element], axis=0)
+            model_full(x_full, training=True)
+            model_crop(x_crop, training=True)
             if ind0 == 1:
                 for ind in bn_layer_inds_full:
                     ma_mean_list_full.append(model_full.layers[ind].moving_mean.numpy())
@@ -296,7 +296,7 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
             ############### supervised classification update ####################
             loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=False)))
             validation_loss_weak_sup_full.append(loss)
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_full, training=False)))
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=False)))
             validation_loss_weak_sup_crop.append(loss)
         validation_loss_cont = tf.reduce_mean(validation_loss_cont)
         tf.summary.scalar('loss/validation_loss_cont', validation_loss_cont, globalstep)
