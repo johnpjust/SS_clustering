@@ -185,10 +185,14 @@ with tf.device(args.device):
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
     model_weaksup_crop = tf.keras.Model(model_.input, output, name='class_model_crop')
 
-    inputs = tf.keras.Input(shape=(64,))
+    # inputs = tf.keras.Input(shape=(64,))
+    inputs = tf.keras.Input(shape=(32,))
     x = layers.Dense(32, activation=actfun)(inputs)
-    output = layers.Dense(32)(x)
+    output = layers.Dense(32)(x) ## hard threshold
+    output = tf.nn.sigmoid(output) ## soft threshold
     mask_ann = tf.keras.Model(inputs, output, name='mask_ann')
+
+model_parms_grouped = [item for sublist in [model_full.trainable_variables, model_crop.trainable_variables, mask_ann.trainable_variables] for item in sublist]
 
 bn_layer_inds_full = [ind for ind, x in enumerate(model_full.layers) if 'bn' in x.name]
 for ind in bn_layer_inds_full:
@@ -199,8 +203,16 @@ for ind in bn_layer_inds_crop:
     model_crop.layers[ind].momentum = np.float32(0)
 
 def pair_cosine_similarity(x):
-    normalized = tf.nn.l2_normalize(x, axis=1)
-    return tf.matmul(normalized, normalized, adjoint_b=True)
+    # x = tf.nn.l2_normalize(x, axis=1)
+    return tf.matmul(x, x, adjoint_b=True)
+
+def squared_distance(x):
+    # x = tf.nn.l2_normalize(x, axis=1)
+    r = tf.reduce_sum(x * x, 1)
+    # turn r into column vector
+    r = tf.reshape(r, [-1, 1])
+    D = r - 2 * tf.matmul(x, tf.transpose(x)) + tf.transpose(r)
+    return tf.maximum(D, 0.0)
 
 data = tf.concat([el[0] for el in data], axis=0)
 idx = np.arange(data.shape[0]*2)
@@ -214,7 +226,13 @@ def nt_xent(x, t=0.5):
     x = tf.linalg.diag_part(x) / (tf.reduce_sum(x, axis=0) - tf.exp(1 / t))
     return -tf.math.log(tf.reduce_mean(x))
 
-def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimizer_full, optimizer_crop,optimizer_weak_sup_full, optimizer_weak_sup_crop, scheduler_full, scheduler_crop, scheduler_weak_sup_full, scheduler_weak_sup_crop, train_ds, val_ds, test_ds, args):
+def nt_xent_euclid(x, t=0.5):
+    x = squared_distance(x)
+    x = tf.gather(x, idx, axis=0)
+    x = tf.linalg.diag_part(x) / (tf.reduce_sum(x, axis=0) - 1)
+    return tf.math.log(tf.reduce_mean(x))
+
+def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_ann, optimizer, optimizer_weak_sup_full, optimizer_weak_sup_crop, scheduler_full, scheduler_crop, scheduler_weak_sup_full, scheduler_weak_sup_crop, scheduler_mask, train_ds, val_ds, test_ds, args):
 
     for epoch in range(args.start_epoch, args.start_epoch + args.epochs):
 
@@ -227,25 +245,28 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
             with tf.GradientTape(persistent=False) as tape:
                 mdl_full_out = model_full(x_full, training=True)
                 mdl_crop_out = model_crop(x_crop, training=True)
-                mask = tf.cast(mask_ann(tf.concat([mdl_full_out, mdl_crop_out], axis=-1)) > 0, tf.float32)
+                # mask = tf.cast(mask_ann(tf.concat([mdl_full_out, mdl_crop_out], axis=-1)) > 0, tf.float32)
+                mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
+                mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
+                mask = mask_ann(10*mdl_crop_out)
+                # mask = tf.cast(mask > 0, tf.float32)
                 loss = nt_xent(tf.reshape(tf.stack([mdl_full_out*mask, mdl_crop_out*mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
-            grads = tape.gradient(loss, [model_full.trainable_variables, model_crop.trainable_variables])
-            grads_full = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads[0]]
-            globalstep = optimizer_full.apply_gradients(zip(grads_full, model_full.trainable_variables))
-            grads_crop = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads[1]]
-            optimizer_crop.apply_gradients(zip(grads_crop, model_crop.trainable_variables))
+            grads = tape.gradient(loss, model_parms_grouped)
+            grads = tf.clip_by_global_norm(grads, args.clip_norm)
+            globalstep = optimizer.apply_gradients(zip(grads[0], model_parms_grouped))
             tf.summary.scalar('loss/train_contrastive', loss, globalstep)
             ############## supervised classification updates ####################
-            with tf.GradientTape(persistent=False) as tape:
-                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=True))) + \
-                       tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=True)))
-            grads = tape.gradient(loss, [model_weaksup_full.trainable_variables, model_weaksup_crop.trainable_variables])
-            grads_full = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads[0]]
-            globalstep = optimizer_weak_sup_full.apply_gradients(zip(grads_full, model_weaksup_full.trainable_variables))
-            tf.summary.scalar('loss/weak_sup_full', loss, globalstep)
-            grads_crop = [None if grad is None else tf.clip_by_norm(grad, clip_norm=args.clip_norm) for grad in grads[1]]
-            optimizer_weak_sup_crop.apply_gradients(zip(grads_crop, model_weaksup_crop.trainable_variables))
-            tf.summary.scalar('loss/weak_sup_crop', loss, globalstep)
+            # with tf.GradientTape(persistent=False) as tape:
+            #     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=True))) + \
+            #            tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=True)))
+            # grads = tape.gradient(loss, [model_weaksup_full.trainable_variables, model_weaksup_crop.trainable_variables])
+            # grads_full = tf.clip_by_global_norm(grads[0], args.clip_norm)
+            # globalstep = optimizer_weak_sup_full.apply_gradients(zip(grads_full[0], model_weaksup_full.trainable_variables))
+            # tf.summary.scalar('loss/weak_sup_full', loss, globalstep)
+            # grads_crop = tf.clip_by_global_norm(grads[1], args.clip_norm)
+            # optimizer_weak_sup_crop.apply_gradients(zip(grads_crop[0], model_weaksup_crop.trainable_variables))
+            # tf.summary.scalar('loss/weak_sup_crop', loss, globalstep)
+            tf.summary.histogram('mask_hist', mask, globalstep)
 
 
         ## batch norm population averaging
@@ -290,20 +311,23 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
             ################### self-supervised update ############################
             mdl_full_out = model_full(x_full, training=False)
             mdl_crop_out = model_crop(x_crop, training=False)
-            mask = tf.cast(mask_ann(tf.concat([mdl_full_out, mdl_crop_out], axis=-1)) > 0, tf.float32)
+            mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
+            mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
+            mask = mask_ann(10*mdl_crop_out)
+            # mask = tf.cast(mask > 0, tf.float32)
             loss = nt_xent(tf.reshape(tf.stack([mdl_full_out * mask, mdl_crop_out * mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
             validation_loss_cont.append(loss)
-            ############### supervised classification update ####################
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=False)))
-            validation_loss_weak_sup_full.append(loss)
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=False)))
-            validation_loss_weak_sup_crop.append(loss)
+            # ############### supervised classification update ####################
+            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=False)))
+            # validation_loss_weak_sup_full.append(loss)
+            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=False)))
+            # validation_loss_weak_sup_crop.append(loss)
         validation_loss_cont = tf.reduce_mean(validation_loss_cont)
         tf.summary.scalar('loss/validation_loss_cont', validation_loss_cont, globalstep)
-        validation_loss_weak_sup_full = tf.reduce_mean(validation_loss_weak_sup_full)
-        tf.summary.scalar('loss/validation_loss_weak_sup_full', validation_loss_weak_sup_full, globalstep)
-        validation_loss_weak_sup_crop = tf.reduce_mean(validation_loss_weak_sup_crop)
-        tf.summary.scalar('loss/validation_loss_weak_sup_crop', validation_loss_weak_sup_crop, globalstep)
+        # validation_loss_weak_sup_full = tf.reduce_mean(validation_loss_weak_sup_full)
+        # tf.summary.scalar('loss/validation_loss_weak_sup_full', validation_loss_weak_sup_full, globalstep)
+        # validation_loss_weak_sup_crop = tf.reduce_mean(validation_loss_weak_sup_crop)
+        # tf.summary.scalar('loss/validation_loss_weak_sup_crop', validation_loss_weak_sup_crop, globalstep)
 
         # test_loss=[]
         # test_loss_simclr = []
@@ -328,7 +352,7 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimi
         # tf.summary.scalar('loss/test', test_loss, globalstep)  ##tf.compat.v1.train.get_global_step()
 
         # stop = scheduler.on_epoch_end(epoch=epoch, monitor=validation_loss_simclr_euclid) or scheduler_simclr.on_epoch_end(epoch=epoch, monitor=validation_loss_simclr)
-        stop = scheduler_full.on_epoch_end(epoch=epoch, monitor=validation_loss_cont) or scheduler_crop.on_epoch_end(epoch=epoch, monitor=validation_loss_cont)
+        stop = scheduler_full.on_epoch_end(epoch=epoch, monitor=validation_loss_cont) or scheduler_crop.on_epoch_end(epoch=epoch, monitor=validation_loss_cont) or scheduler_mask.on_epoch_end(epoch=epoch, monitor=validation_loss_cont)
 
         if stop:
             break
@@ -362,26 +386,24 @@ with tf.device(args.device):
 with tf.device(args.device):
     optimizer_weak_sup_crop = tf.optimizers.Adam()
 with tf.device(args.device):
-    optimizer_full = tf.optimizers.Adam()
-with tf.device(args.device):
-    optimizer_crop = tf.optimizers.Adam()
-
+    optimizer = tf.optimizers.Adam()
 
 # if args.load:
 #     load_model(args, root)
 
 print('Creating scheduler..')
 # use baseline to avoid saving early on
-scheduler_full = EarlyStopping(model=model_full, patience=args.early_stopping, args=args, root=None)
-scheduler_crop = EarlyStopping(model=model_crop, patience=args.early_stopping, args=args, root=None)
-scheduler_weak_sup_full = EarlyStopping(model=model_weaksup_full, patience=args.early_stopping, args=args, root=None)
-scheduler_weak_sup_crop = EarlyStopping(model=model_weaksup_crop, patience=args.early_stopping, args=args, root=None)
+scheduler_full = EarlyStopping(model=model_full, patience=args.patience, args=args, root=None)
+scheduler_crop = EarlyStopping(model=model_crop, patience=args.patience, args=args, root=None)
+scheduler_weak_sup_full = EarlyStopping(model=model_weaksup_full, patience=args.patience, args=args, root=None)
+scheduler_weak_sup_crop = EarlyStopping(model=model_weaksup_crop, patience=args.patience, args=args, root=None)
+scheduler_mask = EarlyStopping(model=mask_ann, patience=args.patience, args=args, root=None)
 
 # with tf.device(args.device):
 #     train(model, optimizer, scheduler, train_ds, val_ds, test_ds, args)
 
 with tf.device(args.device):
-    train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, optimizer_full, optimizer_crop, optimizer_weak_sup_full, optimizer_weak_sup_crop, scheduler_full, scheduler_crop, scheduler_weak_sup_full, scheduler_weak_sup_crop, train_ds, val_ds, test_ds, args)
+    train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_ann, optimizer, optimizer_weak_sup_full, optimizer_weak_sup_crop, scheduler_full, scheduler_crop, scheduler_weak_sup_full, scheduler_weak_sup_crop, scheduler_mask, train_ds, val_ds, test_ds, args)
 
 
 #### tensorboard --logdir=C:\Users\justjo\PycharmProjects\furrowFeatureExtractor\tensorboard
