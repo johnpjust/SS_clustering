@@ -164,13 +164,20 @@ test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
 data = next(test_ds.as_numpy_iterator())
 
+@tf.custom_gradient
+def softhardthresh(x):
+    mask = tf.nn.sigmoid(x)
+    def grad(dy):
+        return dy * (mask * (1 - mask))
+    return tf.cast(mask >= 0.5, tf.float32), grad
+
 actfun = 'swish'
 with tf.device(args.device):
 
     model_ = efn.EfficientNetB1(weights=None, include_top=False, pooling='max', input_shape=data[0][1][0].shape)  # or weights='noisy-student'
     feats = layers.Dense(128, activation=actfun)(model_.output)
     output = layers.Dense(32)(feats)
-    model_full = tf.keras.Model(model_.input, output, name='model_full')
+    model_full = tf.keras.Model(model_.input, tf.nn.tanh(output), name='model_full')
 
     x = layers.Dense(32, activation=actfun)(output)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
@@ -179,7 +186,7 @@ with tf.device(args.device):
     model_ = efn.EfficientNetB0(weights=None, include_top=False, pooling='max', input_shape=data[0][0][0].shape)  # or weights='noisy-student'
     feats = layers.Dense(128, activation=actfun)(model_.output)
     output = layers.Dense(32)(feats)
-    model_crop = tf.keras.Model(model_.input, output, name='model_crop')
+    model_crop = tf.keras.Model(model_.input, tf.nn.tanh(output), name='model_crop')
 
     x = layers.Dense(32, activation=actfun)(output)
     output = layers.Dense(args.CLASS_NAMES.shape[0])(x)
@@ -189,7 +196,8 @@ with tf.device(args.device):
     inputs = tf.keras.Input(shape=(32,))
     x = layers.Dense(32, activation=actfun)(inputs)
     output = layers.Dense(32)(x) ## hard threshold
-    output = tf.nn.sigmoid(output) ## soft threshold
+    # output = tf.nn.sigmoid(output) ## soft threshold
+    output = softhardthresh(output)
     mask_ann = tf.keras.Model(inputs, output, name='mask_ann')
 
 model_parms_grouped = [item for sublist in [model_full.trainable_variables, model_crop.trainable_variables, mask_ann.trainable_variables] for item in sublist]
@@ -246,8 +254,8 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_a
                 mdl_full_out = model_full(x_full, training=True)
                 mdl_crop_out = model_crop(x_crop, training=True)
                 # mask = tf.cast(mask_ann(tf.concat([mdl_full_out, mdl_crop_out], axis=-1)) > 0, tf.float32)
-                mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
-                mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
+                # mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
+                # mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
                 mask = mask_ann(10*mdl_crop_out)
                 # mask = tf.cast(mask > 0, tf.float32)
                 loss = nt_xent(tf.reshape(tf.stack([mdl_full_out*mask, mdl_crop_out*mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
@@ -256,16 +264,16 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_a
             globalstep = optimizer.apply_gradients(zip(grads[0], model_parms_grouped))
             tf.summary.scalar('loss/train_contrastive', loss, globalstep)
             ############## supervised classification updates ####################
-            # with tf.GradientTape(persistent=False) as tape:
-            #     loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=True))) + \
-            #            tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=True)))
-            # grads = tape.gradient(loss, [model_weaksup_full.trainable_variables, model_weaksup_crop.trainable_variables])
-            # grads_full = tf.clip_by_global_norm(grads[0], args.clip_norm)
-            # globalstep = optimizer_weak_sup_full.apply_gradients(zip(grads_full[0], model_weaksup_full.trainable_variables))
-            # tf.summary.scalar('loss/weak_sup_full', loss, globalstep)
-            # grads_crop = tf.clip_by_global_norm(grads[1], args.clip_norm)
-            # optimizer_weak_sup_crop.apply_gradients(zip(grads_crop[0], model_weaksup_crop.trainable_variables))
-            # tf.summary.scalar('loss/weak_sup_crop', loss, globalstep)
+            with tf.GradientTape(persistent=False) as tape:
+                loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=True))) + \
+                       tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=True)))
+            grads = tape.gradient(loss, [model_weaksup_full.trainable_variables, model_weaksup_crop.trainable_variables])
+            grads_full = tf.clip_by_global_norm(grads[0], args.clip_norm)
+            globalstep = optimizer_weak_sup_full.apply_gradients(zip(grads_full[0], model_weaksup_full.trainable_variables))
+            tf.summary.scalar('loss/weak_sup_full', loss, globalstep)
+            grads_crop = tf.clip_by_global_norm(grads[1], args.clip_norm)
+            optimizer_weak_sup_crop.apply_gradients(zip(grads_crop[0], model_weaksup_crop.trainable_variables))
+            tf.summary.scalar('loss/weak_sup_crop', loss, globalstep)
             tf.summary.histogram('mask_hist', mask, globalstep)
 
 
@@ -311,23 +319,23 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_a
             ################### self-supervised update ############################
             mdl_full_out = model_full(x_full, training=False)
             mdl_crop_out = model_crop(x_crop, training=False)
-            mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
-            mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
+            # mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
+            # mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
             mask = mask_ann(10*mdl_crop_out)
             # mask = tf.cast(mask > 0, tf.float32)
             loss = nt_xent(tf.reshape(tf.stack([mdl_full_out * mask, mdl_crop_out * mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
             validation_loss_cont.append(loss)
             # ############### supervised classification update ####################
-            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=False)))
-            # validation_loss_weak_sup_full.append(loss)
-            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=False)))
-            # validation_loss_weak_sup_crop.append(loss)
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_full(x_full, training=False)))
+            validation_loss_weak_sup_full.append(loss)
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(y, model_weaksup_crop(x_crop, training=False)))
+            validation_loss_weak_sup_crop.append(loss)
         validation_loss_cont = tf.reduce_mean(validation_loss_cont)
         tf.summary.scalar('loss/validation_loss_cont', validation_loss_cont, globalstep)
-        # validation_loss_weak_sup_full = tf.reduce_mean(validation_loss_weak_sup_full)
-        # tf.summary.scalar('loss/validation_loss_weak_sup_full', validation_loss_weak_sup_full, globalstep)
-        # validation_loss_weak_sup_crop = tf.reduce_mean(validation_loss_weak_sup_crop)
-        # tf.summary.scalar('loss/validation_loss_weak_sup_crop', validation_loss_weak_sup_crop, globalstep)
+        validation_loss_weak_sup_full = tf.reduce_mean(validation_loss_weak_sup_full)
+        tf.summary.scalar('loss/validation_loss_weak_sup_full', validation_loss_weak_sup_full, globalstep)
+        validation_loss_weak_sup_crop = tf.reduce_mean(validation_loss_weak_sup_crop)
+        tf.summary.scalar('loss/validation_loss_weak_sup_crop', validation_loss_weak_sup_crop, globalstep)
 
         # test_loss=[]
         # test_loss_simclr = []
