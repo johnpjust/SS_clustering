@@ -163,13 +163,13 @@ val_ds = tf.data.Dataset.zip(tuple(dataset_valid_list))
 test_ds = tf.data.Dataset.zip(tuple(dataset_test_list))
 
 data = next(test_ds.as_numpy_iterator())
-
-@tf.custom_gradient
-def softhardthresh(x):
-    mask = tf.nn.sigmoid(x)
-    def grad(dy):
-        return dy * (mask * (1 - mask))
-    return tf.cast(mask >= 0.5, tf.float32), grad
+#
+# @tf.custom_gradient
+# def softhardthresh(x):
+#     mask = tf.nn.sigmoid(x)
+#     def grad(dy):
+#         return dy * (mask * (1 - mask))
+#     return tf.cast(mask >= 0.5, tf.float32), grad
 
 actfun = 'swish'
 with tf.device(args.device):
@@ -196,8 +196,8 @@ with tf.device(args.device):
     inputs = tf.keras.Input(shape=(32,))
     x = layers.Dense(32, activation=actfun)(inputs)
     output = layers.Dense(32)(x) ## hard threshold
-    # output = tf.nn.sigmoid(output) ## soft threshold
-    output = softhardthresh(output)
+    output = tf.nn.sigmoid(output) ## soft threshold
+    # output = softhardthresh(output)
     mask_ann = tf.keras.Model(inputs, output, name='mask_ann')
 
 model_parms_grouped = [item for sublist in [model_full.trainable_variables, model_crop.trainable_variables, mask_ann.trainable_variables] for item in sublist]
@@ -211,7 +211,7 @@ for ind in bn_layer_inds_crop:
     model_crop.layers[ind].momentum = np.float32(0)
 
 def pair_cosine_similarity(x):
-    # x = tf.nn.l2_normalize(x, axis=1)
+    x = tf.nn.l2_normalize(x, axis=1)
     return tf.matmul(x, x, adjoint_b=True)
 
 def squared_distance(x):
@@ -257,7 +257,7 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_a
                 # mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
                 # mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
                 mask = mask_ann(10*mdl_crop_out)
-                # mask = tf.cast(mask > 0, tf.float32)
+                mask = tf.cast(mask >= 0.5, tf.float32)
                 loss = nt_xent(tf.reshape(tf.stack([mdl_full_out*mask, mdl_crop_out*mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
             grads = tape.gradient(loss, model_parms_grouped)
             grads = tf.clip_by_global_norm(grads, args.clip_norm)
@@ -322,7 +322,7 @@ def train(model_full, model_crop, model_weaksup_full, model_weaksup_crop, mask_a
             # mdl_full_out = tf.nn.l2_normalize(mdl_full_out, axis=1)
             # mdl_crop_out = tf.nn.l2_normalize(mdl_crop_out, axis=1)
             mask = mask_ann(10*mdl_crop_out)
-            # mask = tf.cast(mask > 0, tf.float32)
+            mask = tf.cast(mask >= 0.5, tf.float32)
             loss = nt_xent(tf.reshape(tf.stack([mdl_full_out * mask, mdl_crop_out * mask], axis=1), [-1, tf.shape(mdl_full_out)[1]]))
             validation_loss_cont.append(loss)
             # ############### supervised classification update ####################
@@ -420,3 +420,26 @@ with tf.device(args.device):
 
 # C:\Program Files\NVIDIA Corporation\NVSMI
 # nvidia-smi  -l 2
+
+
+# ##### save models
+# mask_ann.save(os.path.join(args.path, 'mask_ann.h5'))
+# model_full.save(os.path.join(args.path, 'model_full'))
+# model_crop.save(os.path.join(args.path, 'model_crop'))
+# model_weaksup_crop.save(os.path.join(args.path, 'model_weaksup_crop'))
+# model_weaksup_full.save(os.path.join(args.path, 'model_weaksup_full'))
+#
+# np.save(os.path.join(args.path, 'optimizer_weights.npy'), optimizer.get_weights())
+# np.save(os.path.join(args.path, 'optimizer_weak_sup_crop.npy'), optimizer_weak_sup_crop.get_weights())
+# np.save(os.path.join(args.path, 'optimizer_weak_sup_full.npy'), optimizer_weak_sup_full.get_weights())
+
+'''
+### to set an empty 
+optimizer._weights = np.load(os.path.join(args.path, 'optimizer_weights.npy'), allow_pickle=True)
+'''
+
+# from contextlib import redirect_stdout
+#
+# with open(os.path.join(args.path, 'mask_ann_summary.txt'), 'w') as f:
+#     with redirect_stdout(f):
+#         mask_ann.summary()
