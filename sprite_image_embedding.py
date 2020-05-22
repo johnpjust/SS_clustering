@@ -5,6 +5,7 @@ import pandas as pd
 from skimage import io
 from PIL import Image
 from skimage import io
+import os
 
 sprite_size = 8192
 def create_sprite(img_data, n_h, n_w):
@@ -12,7 +13,7 @@ def create_sprite(img_data, n_h, n_w):
     Tile images into sprite image.
     Add any necessary padding
     """
-    n_h = n_h - int((n_h * n_w - img_data.shape[0]) / n_w)
+    # n_h = n_h - int((n_h * n_w - img_data.shape[0]) / n_w)
     # n = int(np.ceil(np.sqrt(img_data.shape[0])))
     padding = ((0, n_h*n_w - img_data.shape[0]), (0, 0), (0, 0), (0, 0))
     data = np.pad(img_data, padding, mode='constant', constant_values=0)
@@ -69,7 +70,67 @@ for i in range(img_num):
     # print(row_loc, col_loc)
 img_data = np.array(img_data)
 
+# n_h = n_h - int((n_h * n_w - img_data.shape[0]) / n_w) ## all images, fill in with blanks
+n_h = int(n_h - np.ceil((n_h * n_w - img_data.shape[0]) / n_w)) ## leave out last incomplete row
+inds = np.random.permutation(n_h*n_w)
+img_data = img_data[inds,:,:,:]
 sprite = create_sprite(img_data, n_h, n_w)
+
+
+# sprite = create_sprite(img_data, n_h, n_w)
 # save image
-np.savetxt(r'D:\Just\pyprojects\SAS_disentangle\tensorboard\SaS_2020-05-16-13-42-18\embedding_projector\metadata.tsv', crops, fmt='%s', delimiter='\t')
-io.imsave(r'D:\Just\pyprojects\SAS_disentangle\tensorboard\SaS_2020-05-16-13-42-18\embedding_projector\sprite.jpeg', sprite, quality=100) ## quality = [1 100], with 100 being best and 1 being worst
+log_dir = r'D:\Just\pyprojects\SAS_disentangle\tensorboard\SaS_2020-05-16-13-42-18\embedding_projector'
+np.savetxt(os.path.join(log_dir, 'metadata.tsv'), crops, fmt='%s', delimiter='\t')
+io.imsave(os.path.join(log_dir, 'sprite.jpeg'), sprite, quality=100) ## quality = [1 100], with 100 being best and 1 being worst
+
+
+
+# from tensorboard.plugins import projector
+# # Create a checkpoint from embedding, the filename and key are
+# # name of the tensor.
+# embeddings = tf.Variable(embeds, name='test_embedding')
+# checkpoint = tf.train.Checkpoint(embedding=embeddings)
+# checkpoint.save(os.path.join(log_dir, "embedding.ckpt"))
+#
+# # Set up config
+# config = projector.ProjectorConfig()
+# embedding = config.embeddings.add()
+# # The name of the tensor will be suffixed by `/.ATTRIBUTES/VARIABLE_VALUE`
+# embedding.tensor_name = "embedding/.ATTRIBUTES/VARIABLE_VALUE"
+# embedding.metadata_path = 'metadata.tsv'
+# embedding.sprite.image_path = os.path.join(log_dir, 'sprite.jpeg')
+# embedding.sprite.single_image_dim.extend([image_width, image_height])
+# projector.visualize_embeddings(log_dir, config)
+
+
+
+from lapjv import lapjv
+from scipy.spatial.distance import cdist
+import umap
+from tensorflow.python.keras.preprocessing import image
+
+def generate_umap(activations):
+    umap_ = umap.UMAP(n_neighbors=200, n_components=2, min_dist=0.5)
+    X_2d = umap_.fit_transform(activations)
+    X_2d -= X_2d.min(axis=0)
+    X_2d /= X_2d.max(axis=0)
+    return X_2d
+
+def save_umap_grid(img_collection, X_2d, out_res=sprite.shape, out_dim=[n_h, n_w]):
+    grid = np.dstack(np.meshgrid(np.linspace(0, 1, out_dim[0]), np.linspace(0, 1, out_dim[1]))).reshape(-1, 2)
+    cost_matrix = cdist(grid, X_2d, "sqeuclidean").astype(np.float32)
+    cost_matrix = cost_matrix * (100000 / cost_matrix.max())
+    row_asses, col_asses, _ = lapjv(cost_matrix)
+    grid_jv = grid[col_asses]
+    out = np.ones((out_dim*out_res, out_dim*out_res, 3))
+
+    for pos, img in zip(grid_jv, img_collection):
+        h_range = int(np.floor(pos[0]* (out_dim[0] - 1) * out_res[0]))
+        w_range = int(np.floor(pos[1]* (out_dim[1] - 1) * out_res[1]))
+        out[h_range:h_range + out_res[0], w_range:w_range + out_res[1]] = image.img_to_array(img)
+
+    im = image.array_to_img(out)
+    im.save(os.path.join(log_dir, 'sprite_arranged.png'), quality=100)
+
+X_2d = generate_umap(embeds)
+save_umap_grid(img_data, X_2d)
