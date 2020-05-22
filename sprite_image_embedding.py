@@ -116,13 +116,13 @@ def generate_umap(activations):
     X_2d /= X_2d.max(axis=0)
     return X_2d
 
-def save_umap_grid(img_collection, X_2d, out_res=sprite.shape, out_dim=[n_h, n_w]):
+def save_umap_grid(img_collection, X_2d, out_res=[image_height, image_width], out_dim=[n_h, n_w]):
     grid = np.dstack(np.meshgrid(np.linspace(0, 1, out_dim[0]), np.linspace(0, 1, out_dim[1]))).reshape(-1, 2)
     cost_matrix = cdist(grid, X_2d, "sqeuclidean").astype(np.float32)
     cost_matrix = cost_matrix * (100000 / cost_matrix.max())
     row_asses, col_asses, _ = lapjv(cost_matrix)
     grid_jv = grid[col_asses]
-    out = np.ones((out_dim*out_res, out_dim*out_res, 3))
+    out = np.ones((out_dim[0]*out_res[0], out_dim[1]*out_res[1], 3), dtype=np.uint8)
 
     for pos, img in zip(grid_jv, img_collection):
         h_range = int(np.floor(pos[0]* (out_dim[0] - 1) * out_res[0]))
@@ -132,5 +132,5 @@ def save_umap_grid(img_collection, X_2d, out_res=sprite.shape, out_dim=[n_h, n_w
     im = image.array_to_img(out)
     im.save(os.path.join(log_dir, 'sprite_arranged.png'), quality=100)
 
-X_2d = generate_umap(embeds)
+X_2d = generate_umap(embeds[inds,:])
 save_umap_grid(img_data, X_2d)
