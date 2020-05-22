@@ -12,13 +12,13 @@ def create_sprite(img_data, n_h, n_w):
     Tile images into sprite image.
     Add any necessary padding
     """
-
-    n = int(np.ceil(np.sqrt(img_data.shape[0])))
+    n_h = n_h - int((n_h * n_w - img_data.shape[0]) / n_w)
+    # n = int(np.ceil(np.sqrt(img_data.shape[0])))
     padding = ((0, n_h*n_w - img_data.shape[0]), (0, 0), (0, 0), (0, 0))
     data = np.pad(img_data, padding, mode='constant', constant_values=0)
 
     # Tile images into sprite
-    data = data.reshape((n_h, n_w) + data.shape[1:]).transpose((0, 2, 1, 3, 4))
+    data = data.reshape((n_h-int((n_h*n_w - img_data.shape[0]) / n_w), n_w) + data.shape[1:]).transpose((0, 2, 1, 3, 4))
     # print(data.shape) => (n, image_height, n, image_width, 3)
 
     data = data.reshape((n_h * data.shape[1], n_w * data.shape[3]) + data.shape[4:])
